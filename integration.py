@@ -1,0 +1,234 @@
+import pandas as pd
+import os
+import logging
+from configuration import Config
+from database_manager import db_manager
+
+logger = logging.getLogger(__name__)
+
+class Integration:
+    def __init__(self, db_m_instance=None):
+        self.db_manager = db_m_instance if db_m_instance else db_manager
+        logger.info("Integration module initialized.")
+
+    def import_estimate_from_csv(self, file_path, project_id=None):
+        if not os.path.exists(file_path):
+            logger.error(f"CSV file not found: {file_path}")
+            return False, "File not found."
+
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8-sig')
+
+            if df.empty:
+                logger.warning(f"CSV file '{file_path}' is empty or has no data rows. Nothing to import.")
+                return False, "CSV file is empty or contains no data."
+
+            insert_query = """
+            INSERT INTO raw_estimates (ProjectID, RawData, SourceFile, Status)
+            VALUES (?, ?, ?, ?)
+            """
+
+            base_filename = os.path.basename(file_path)
+            imported_rows_count = 0
+
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+
+            try:
+                for index, row in df.iterrows():
+                    raw_data_json = pd.Series(row).to_json(orient='index')
+                    params = (project_id, raw_data_json, base_filename, 'Pending Processing')
+                    cursor.execute(insert_query, params)
+                    imported_rows_count += 1
+
+                conn.commit()
+                logger.info(f"Successfully imported {imported_rows_count} rows from '{file_path}' into raw_estimates.")
+                return True, f"Successfully imported {imported_rows_count} rows from '{base_filename}'."
+
+            except Exception as e_inner:
+                conn.rollback()
+                logger.error(f"Error during batch insert from CSV '{file_path}': {e_inner}", exc_info=True)
+                return False, f"Error during database insert: {e_inner}"
+
+        except FileNotFoundError:
+            logger.error(f"Error: The file '{file_path}' was not found (re-check).")
+            return False, "File not found."
+        except pd.errors.EmptyDataError:
+            logger.error(f"Error: The file '{file_path}' is empty (pandas error).")
+            return False, "Empty data file."
+        except pd.errors.ParserError as pe:
+            logger.error(f"Error: Could not parse '{file_path}'. Check CSV format. Details: {pe}")
+            return False, "CSV parsing error. Ensure valid CSV format."
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred during CSV import of '{file_path}': {e}")
+            return False, f"An unexpected error occurred: {e}"
+
+    def import_labor_budget_from_csv(self, file_path, project_id=None):
+        """
+        Imports labor budget data from a CSV file into the 'project_budgets' table.
+        Assumes the CSV has columns like 'Phase', 'Task', 'Cost Code', 'Labor', 'Material', etc.
+        """
+        if not os.path.exists(file_path):
+            logger.error(f"Labor budget CSV file not found: {file_path}")
+            return False, "File not found."
+
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8-sig')
+
+            # Identify the row containing headers (e.g., 'Phase', 'Task', 'Cost Code', 'Labor')
+            # This is a heuristic based on the sample provided in the document analysis.
+            header_row_index = -1
+            for i, row in df.iterrows():
+                if 'Phase' in row.values and 'Labor' in row.values and 'Cost Code' in row.values:
+                    header_row_index = i
+                    break
+            
+            if header_row_index == -1:
+                logger.error(f"Could not find header row in labor budget CSV: {file_path}")
+                return False, "Invalid CSV format: Header row not found."
+
+            # Read the CSV again, this time specifying the header row
+            df = pd.read_csv(file_path, encoding='utf-8-sig', skiprows=header_row_index + 1, header=None)
+            # Re-read headers from the identified header row
+            headers = pd.read_csv(file_path, encoding='utf-8-sig', skiprows=header_row_index, nrows=1, header=None).iloc[0].tolist()
+            df.columns = headers
+
+            # Clean column names (remove leading/trailing spaces, handle special chars)
+            df.columns = df.columns.str.strip().str.replace(r'[^a-zA-Z0-9_]', '', regex=True)
+            df.rename(columns={'CostCode': 'CostCode', 'Labor': 'Labor', 'Material': 'Material', 'Equip': 'Equip', 'SubCont': 'SubCont', 'DJC': 'DJC'}, inplace=True)
+
+            required_cols = ['Phase', 'Task', 'CostCode', 'Labor']
+            if not all(col in df.columns for col in required_cols):
+                logger.error(f"Missing required columns in labor budget CSV: {required_cols}. Found: {df.columns.tolist()}")
+                return False, "Missing required columns in CSV."
+
+            # Filter out rows where CostCode is empty or 'Job'
+            df = df[df['CostCode'].notna() & (df['CostCode'] != 'Job')]
+
+            if df.empty:
+                logger.warning(f"No valid data rows found in labor budget CSV after filtering: {file_path}")
+                return False, "No valid data rows to import after filtering."
+
+            # Convert relevant columns to numeric, coercing errors
+            for col in ['Labor', 'Material', 'Equip', 'SubCont', 'DJC']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(',', '', regex=False) # Remove commas
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                else:
+                    df[col] = 0.0 # Add column if missing and set to 0
+
+            insert_query = """
+            INSERT INTO project_budgets (ProjectID, WBSElementID, BudgetType, Amount, Notes)
+            VALUES (?, ?, ?, ?, ?)
+            """
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+            inserted_rows = 0
+
+            for index, row in df.iterrows():
+                # Try to find WBSElementID based on ProjectID and CostCode
+                wbs_element_id = None
+                if project_id and 'CostCode' in row and row['CostCode']:
+                    wbs_query = "SELECT WBSElementID FROM wbs_elements WHERE ProjectID = ? AND WBSCode = ?"
+                    wbs_row = self.db_manager.execute_query(wbs_query, (project_id, row['CostCode']), fetch_one=True)
+                    if wbs_row:
+                        wbs_element_id = wbs_row['WBSElementID']
+
+                # Insert Labor budget
+                if row['Labor'] > 0:
+                    cursor.execute(insert_query, (project_id, wbs_element_id, 'Labor', row['Labor'], f"From {os.path.basename(file_path)} - Phase: {row.get('Phase','N/A')} Task: {row.get('Task','N/A')}"))
+                    inserted_rows += 1
+                
+                # Insert Material budget
+                if row['Material'] > 0:
+                    cursor.execute(insert_query, (project_id, wbs_element_id, 'Material', row['Material'], f"From {os.path.basename(file_path)} - Phase: {row.get('Phase','N/A')} Task: {row.get('Task','N/A')}"))
+                    inserted_rows += 1
+
+                # Insert Equip budget
+                if row['Equip'] > 0:
+                    cursor.execute(insert_query, (project_id, wbs_element_id, 'Equipment', row['Equip'], f"From {os.path.basename(file_path)} - Phase: {row.get('Phase','N/A')} Task: {row.get('Task','N/A')}"))
+                    inserted_rows += 1
+
+                # Insert SubCont budget
+                if row['SubCont'] > 0:
+                    cursor.execute(insert_query, (project_id, wbs_element_id, 'Subcontractor', row['SubCont'], f"From {os.path.basename(file_path)} - Phase: {row.get('Phase','N/A')} Task: {row.get('Task','N/A')}"))
+                    inserted_rows += 1
+
+                # Insert DJC budget
+                if row['DJC'] > 0:
+                    cursor.execute(insert_query, (project_id, wbs_element_id, 'Direct Job Cost', row['DJC'], f"From {os.path.basename(file_path)} - Phase: {row.get('Phase','N/A')} Task: {row.get('Task','N/A')}"))
+                    inserted_rows += 1
+
+            conn.commit()
+            logger.info(f"Successfully imported {inserted_rows} budget entries from '{file_path}' into project_budgets.")
+            return True, f"Successfully imported {inserted_rows} budget entries from '{os.path.basename(file_path)}'."
+
+        except Exception as e:
+            logger.exception(f"An unexpected error occurred during labor budget CSV import of '{file_path}': {e}")
+            return False, f"An unexpected error occurred: {e}"
+
+    def import_sales_order_from_csv(self, file_path, project_id=None):
+        """
+        Placeholder for importing sales order data from a CSV file.
+        """
+        logger.info(f"Simulating import of sales order CSV: {file_path}")
+        return True, "Sales order import simulated successfully."
+
+    def import_material_details_from_csv(self, file_path):
+        """
+        Placeholder for importing material details from a CSV file.
+        """
+        logger.info(f"Simulating import of material details CSV: {file_path}")
+        return True, "Material details import simulated successfully."
+
+    def export_data_to_excel(self, data_df, output_filename, sheet_name='Report'):
+        if not isinstance(data_df, pd.DataFrame):
+            logger.error("Invalid data type for export to Excel. DataFrame required.")
+            return False, "Invalid data for export (must be DataFrame)."
+
+        output_path = os.path.join(Config.get_reports_dir(), output_filename)
+        try:
+            data_df.to_excel(output_path, sheet_name=sheet_name, index=False)
+            logger.info(f"Successfully exported data to Excel: {output_path}")
+            return True, f"Report exported to {output_path}"
+        except Exception as e:
+            logger.exception(f"Error exporting data to Excel '{output_path}': {e}")
+            return False, f"Failed to export report: {e}"
+
+    def export_data_to_csv(self, data_df, output_filename):
+        if not isinstance(data_df, pd.DataFrame):
+            logger.error("Invalid data type for export to CSV. DataFrame required.")
+            return False, "Invalid data for export (must be DataFrame)."
+
+        output_path = os.path.join(Config.get_reports_dir(), output_filename)
+        try:
+            data_df.to_csv(output_path, index=False)
+            logger.info(f"Successfully exported data to CSV: {output_path}")
+            return True, f"Report exported to {output_path}"
+        except Exception as e:
+            logger.exception(f"Error exporting data to CSV '{output_path}': {e}")
+            return False, f"Failed to export report: {e}"
+
+    def get_raw_estimates(self):
+        query = "SELECT RawEstimateID, ProjectID, RawData, SourceFile, Status FROM raw_estimates"
+        rows = self.db_manager.execute_query(query, fetch_all=True)
+
+        if rows is None:
+            logger.error("Failed to retrieve raw estimates from database.")
+            return pd.DataFrame()
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame([dict(row) for row in rows])
+
+    def get_processed_estimates(self):
+        query = "SELECT ProcessedEstimateID, ProjectID, RawEstimateID, CostCode, Description, Quantity, Unit, UnitCost, TotalCost, Phase, ProcessedDate FROM processed_estimates"
+        rows = self.db_manager.execute_query(query, fetch_all=True)
+
+        if rows is None:
+            logger.error("Failed to retrieve processed estimates from database.")
+            return pd.DataFrame()
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame([dict(row) for row in rows])
