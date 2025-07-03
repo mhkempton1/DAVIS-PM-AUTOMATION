@@ -1,0 +1,8 @@
+Cost Code,Description,Quantity,Unit,Unit Cost,Total Cost,Phase
+01-010,Mobilization,1.0,LS,5000.0,5000.0,Pre-Construction
+01-020,Project Supervision,40.0,HR,75.0,3000.0,Pre-Construction
+02-100,Site Prep,500.0,SY,15.0,7500.0,Foundation
+03-200,Concrete Footings,15.0,CY,300.0,4500.0,Foundation
+03-210,Concrete Slab,200.0,SF,5.0,1000.0,Foundation
+04-300,Framing,5000.0,BF,0.75,3750.0,Structure
+05-400,Roofing,20.0,SQ,150.0,3000.0,Exterior

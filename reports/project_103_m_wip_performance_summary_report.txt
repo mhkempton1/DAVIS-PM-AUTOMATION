@@ -1,0 +1,16 @@
+Project Performance Report for: N/A
+--------------------------------------------------
+
+Performance Suggestions:
+
+--------------------------------------------------
+Detailed Cost Variance (by WBS):
+Empty DataFrame
+Columns: []
+Index: []
+
+Detailed Schedule Variance (by WBS):
+Empty DataFrame
+Columns: []
+Index: []
+
