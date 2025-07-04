@@ -1,6 +1,7 @@
 import pandas as pd
 import logging
 import uuid # For generating unique project IDs if needed, otherwise use auto-increment
+from datetime import datetime # Added for document notes timestamp
 from database_manager import db_manager # Import the singleton database manager
 from configuration import Config
 
@@ -255,80 +256,106 @@ class ProjectStartup:
             # This could be normal if no estimates were linked or existed for this project.
             return True, "No processed estimate data specifically for this project to generate WBS. If estimates were just linked, this might indicate an issue or no unlinked estimates were found."
 
-        logger.info(f"Generating WBS for Project ID: {project_id} from {len(processed_df)} project-specific processed estimates.")
+        logger.info(f"Generating WBS for project ID: {project_id}...")
 
-        # Group by 'phase' and 'cost_code' to create WBS hierarchy
-        # A simple WBS can be Phase -> Cost Code -> Estimate Item
-        # For simplicity, let's make Cost Code the WBS element and link estimate items to it.
-        # More complex WBS would involve recursive definition.
+        # Check if project exists (optional, but good practice)
+        project_details = self.get_project_details(project_id)
+        if not project_details:
+            return False, f"Project with ID {project_id} not found."
 
-        wbs_elements_to_insert = []
-        project_total_estimated_cost = 0.0
-        # project_conn = self.db_manager.get_connection() # Not needed if using self.db_manager.execute_query
+        # Get processed estimates for this project that are not yet linked to a WBS element
+        # Assuming 'wbs_elements' table has a 'ProcessedEstimateID' column to mark linkage
+        # and 'processed_estimates' has 'ProjectID'
+        # A ProcessedEstimateID might be linked to a WBS element if it was the primary source for it.
+        # The goal here is to create WBS elements from estimates that haven't been used to create one.
 
-        # Iterate through processed estimates to create WBS elements
-        # Link ProcessedEstimateID to wbs_elements.ProcessedEstimateID
-        for index, row in processed_df.iterrows():
-            # DataFrame columns are 'cost_code', 'description', 'total_cost', 'RawEstimateID', 'ProcessedEstimateID' (from df itself)
-            # Note: processed_df from _get_processed_estimates_for_project_df does not include ProcessedEstimateID from DB yet.
-            # The `row` here is from processed_df which was created from `raw_estimates`.
-            # `raw_df` in `process_estimate_data` has `RawEstimateID`.
-            # `processed_df_final` which is passed to `_save_processed_data` has `RawEstimateID`.
-            # `processed_estimates` table has `ProcessedEstimateID` (PK) and `RawEstimateID` (FK).
-            # So, `processed_df` from `_get_processed_estimates_for_project_df` will have `ProcessedEstimateID` and `RawEstimateID`.
+        # Let's fetch all processed estimates for the project first.
+        # The logic will then iterate and create/update WBS elements.
+        # This approach is more aligned with the original structure of iterating through processed_df.
 
-            cost_code = row['CostCode'] # Uses schema name now due to rename in _get_processed_estimates_for_project_df (if it was done, or direct select)
-                                      # The DataFrame processed_df comes from _get_processed_estimates_for_project_df
-                                      # which selects all columns, so schema names are used.
-            description = row['Description']
-            estimated_cost = row['TotalCost']
-            # This is the ProcessedEstimateID from the processed_estimates table
-            current_processed_estimate_id = row['ProcessedEstimateID']
+        processed_df = self._get_processed_estimates_for_project_df(project_id)
+        if processed_df.empty:
+            logger.info(f"No processed estimate data found for project ID {project_id} to generate WBS.")
+            return True, "No processed estimate data for this project to generate WBS."
 
-            # Check if a WBS element for this cost_code already exists for this project
-            existing_wbs_element = self.db_manager.execute_query(
-                "SELECT WBSElementID, EstimatedCost FROM wbs_elements WHERE ProjectID = ? AND WBSCode = ?", # Schema names
-                (project_id, cost_code), fetch_one=True
-            )
+        logger.info(f"Found {len(processed_df)} processed estimates for project {project_id}.")
 
-            wbs_element_id = None
-            if existing_wbs_element:
-                wbs_element_id = existing_wbs_element['WBSElementID']
-                new_total_cost = existing_wbs_element['EstimatedCost'] + estimated_cost
-                self.db_manager.execute_query(
-                    "UPDATE wbs_elements SET EstimatedCost = ?, ProcessedEstimateID = ? WHERE WBSElementID = ?", # Schema names. Link ProcessedEstimateID.
-                    (new_total_cost, current_processed_estimate_id, wbs_element_id), commit=True
-                )
-                logger.debug(f"Updated WBS element {wbs_element_id} for {cost_code}, linked to ProcessedEstimateID {current_processed_estimate_id}")
+        created_wbs_count = 0
+        updated_wbs_count = 0
+        project_total_estimated_cost = 0.0 # Recalculate based on WBS items
+
+        # Clear existing WBS elements for the project to avoid duplicates if re-running.
+        # This is a design choice: either append/update or clear-and-rebuild.
+        # For simplicity of this refactor, let's adopt a clear-and-rebuild for WBS from estimates.
+        # More sophisticated logic would update existing, add new, and remove obsolete.
+
+        # Before deleting, store existing WBS costs if we need to reconcile project total cost later.
+        # For now, we recalculate project total cost from the newly generated WBS.
+
+        delete_wbs_query = "DELETE FROM wbs_elements WHERE ProjectID = ?"
+        self.db_manager.execute_query(delete_wbs_query, (project_id,), commit=True)
+        logger.info(f"Cleared existing WBS elements for project {project_id} before regeneration.")
+
+        # Using a dictionary to aggregate costs for WBS elements if multiple estimate lines map to the same WBSCode
+        wbs_data_aggregated = {}
+
+        for _, row in processed_df.iterrows():
+            cost_code = row['CostCode']
+            description = row['Description'] # Use description from the first estimate line for this WBSCode
+            estimated_cost = row.get('TotalCost', 0.0) or 0.0 # Ensure it's a float
+            processed_estimate_id = row['ProcessedEstimateID']
+
+            if cost_code not in wbs_data_aggregated:
+                wbs_data_aggregated[cost_code] = {
+                    'description': description,
+                    'total_cost': 0.0,
+                    'processed_estimate_ids': [] # Store all linked estimate IDs
+                }
+            wbs_data_aggregated[cost_code]['total_cost'] += estimated_cost
+            wbs_data_aggregated[cost_code]['processed_estimate_ids'].append(processed_estimate_id)
+
+        # Insert aggregated WBS elements
+        for wbs_code, data in wbs_data_aggregated.items():
+            # For ProcessedEstimateID in wbs_elements, we might link the first one,
+            # or handle multiple links if the schema supports it (e.g., a linking table).
+            # Current schema links one ProcessedEstimateID. We'll use the first one for now.
+            main_processed_estimate_id = data['processed_estimate_ids'][0] if data['processed_estimate_ids'] else None
+
+            insert_wbs_query = """
+            INSERT INTO wbs_elements (ProjectID, WBSCode, Description, EstimatedCost, ProcessedEstimateID, Status)
+            VALUES (?, ?, ?, ?, ?, 'Planned')
+            """
+            params = (project_id, wbs_code, data['description'], data['total_cost'], main_processed_estimate_id)
+
+            wbs_insert_success = self.db_manager.execute_query(insert_wbs_query, params, commit=True)
+            if wbs_insert_success:
+                created_wbs_count += 1
+                project_total_estimated_cost += data['total_cost']
+                # Update all contributing processed_estimates to link to this new WBSElementID
+                # This requires getting the WBSElementID of the just-inserted row.
+                # last_row_id_cursor = self.db_manager.execute_query("SELECT last_insert_rowid()", fetch_one=True)
+                # if last_row_id_cursor:
+                #    new_wbs_element_id = last_row_id_cursor[0]
+                #    for pe_id in data['processed_estimate_ids']:
+                #        # This part is complex if wbs_elements.ProcessedEstimateID is meant to be a unique FK.
+                #        # The schema allows ProcessedEstimateID to be NULL in wbs_elements,
+                #        # and it's not marked UNIQUE.
+                #        # The current approach of linking one main_processed_estimate_id is simpler.
+                #        # If a many-to-many is needed, schema change is required.
+                #        pass # No further update to processed_estimates for WBS link in this simplified model
             else:
-                # Insert new WBS element, including ProcessedEstimateID
-                insert_wbs_query = """
-                INSERT INTO wbs_elements (ProjectID, WBSCode, Description, EstimatedCost, ProcessedEstimateID, Status)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """ # Schema names
-                # Default status for new WBS, e.g., 'Planned'
-                wbs_status_planned = 'Planned'
-                wbs_success = self.db_manager.execute_query(
-                    insert_wbs_query, (project_id, cost_code, description, estimated_cost, current_processed_estimate_id, wbs_status_planned), commit=True
-                )
-                if wbs_success:
-                    wbs_element_id = self.db_manager.execute_query("SELECT last_insert_rowid()", fetch_one=True)[0]
-                    logger.debug(f"Created WBS element {wbs_element_id} for {cost_code}, linked to ProcessedEstimateID {current_processed_estimate_id}")
-                else:
-                    logger.error(f"Failed to create WBS element for {cost_code} - {description}")
-                    # continue # Skip if WBS creation failed - this was for old linking logic
+                logger.error(f"Failed to insert WBS element for WBSCode {wbs_code} in project {project_id}")
 
-            # The linking is now done by setting wbs_elements.ProcessedEstimateID.
-            # No update to processed_estimates table for wbs_element_id is needed as that column doesn't exist.
-            project_total_estimated_cost += estimated_cost
 
-        # Update the project's total estimated cost (using 'EstimatedCost' and 'ProjectID' from schema.sql)
+        # Update the project's total estimated cost
         update_project_cost_query = "UPDATE Projects SET EstimatedCost = ? WHERE ProjectID = ?"
         self.db_manager.execute_query(update_project_cost_query, (project_total_estimated_cost, project_id), commit=True)
         logger.info(f"Updated EstimatedCost for project {project_id} to {project_total_estimated_cost:.2f}")
 
-        logger.info(f"WBS elements generated for Project ID: {project_id}.")
-        return True, "WBS generated successfully."
+        if created_wbs_count > 0:
+            return True, f"Successfully generated/updated {created_wbs_count} WBS items for project {project_id}."
+        else:
+            return True, f"No new WBS items to generate based on available estimates for project {project_id}, or an error occurred."
 
     def generate_project_budget(self, project_id):
         """
@@ -1050,6 +1077,78 @@ class ProjectStartup:
         except Exception as e:
             logger.error(f"Database error creating production order: {e}", exc_info=True)
             return False, f"Database error creating production order: {e}", None
+
+    def add_document_note(self, document_id, page_number, employee_id, note_text):
+        """Adds a note to a document page."""
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        query = """
+        INSERT INTO document_notes (document_id, page_number, employee_id, note_text, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """
+        params = (document_id, page_number, employee_id, note_text, created_at)
+
+        # Assuming execute_query returns a truthy value (like cursor) on success for inserts,
+        # or we might need to adjust based on its actual return for non-select queries.
+        # If it returns True/False directly:
+        success = self.db_manager.execute_query(query, params, commit=True)
+        if success: # Or if success.lastrowid for some implementations
+            # To get the ID of the inserted note, if needed by caller:
+            # note_id = self.db_manager.execute_query("SELECT last_insert_rowid()", fetch_one=True)[0]
+            logger.info(f"Note added for document ID {document_id}, page {page_number} by employee {employee_id}.")
+            return True, "Note added successfully." # Optionally return note_id
+        else:
+            logger.error(f"Failed to add note for document ID {document_id}, page {page_number}.")
+            return False, "Failed to add note to the database."
+
+    def get_document_notes(self, document_id):
+        """Retrieves notes for a specific document, joined with employee names."""
+        query = """
+            SELECT dn.page_number, e.FirstName, e.LastName, dn.note_text, dn.created_at
+            FROM document_notes dn
+            JOIN Employees e ON dn.employee_id = e.EmployeeID
+            WHERE dn.document_id = ?
+            ORDER BY dn.page_number, dn.created_at
+        """
+        notes = self.db_manager.execute_query(query, (document_id,), fetch_all=True)
+        if notes:
+            return [dict(note) for note in notes]
+        return []
+
+    def get_pending_material_requests(self):
+        """Retrieves pending material requests from Purchasing_Log."""
+        query = """
+        SELECT InternalLogID, ProjectID, MaterialDescription, QuantityRequested, UnitOfMeasure,
+               UrgencyLevel, RequiredByDate, Status, DateCreated
+        FROM Purchasing_Log
+        WHERE Status NOT IN ('Received Full', 'Cancelled')
+        ORDER BY DateCreated DESC
+        """
+        try:
+            requests = self.db_manager.execute_query(query, fetch_all=True)
+            if requests:
+                return [dict(req) for req in requests]
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching pending material requests: {e}", exc_info=True)
+            return []
+
+    def get_active_production_orders(self):
+        """Retrieves active production orders from Production_Assembly_Tracking."""
+        query = """
+        SELECT ProductionID, AssemblyID, ProjectID, QuantityToProduce, Status,
+               StartDate, CompletionDate, AssignedToEmployeeID, DateCreated
+        FROM Production_Assembly_Tracking
+        WHERE Status NOT IN ('Completed', 'Shipped', 'Cancelled')
+        ORDER BY DateCreated DESC
+        """
+        try:
+            orders = self.db_manager.execute_query(query, fetch_all=True)
+            if orders:
+                return [dict(order) for order in orders]
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching active production orders: {e}", exc_info=True)
+            return []
 
 
 if __name__ == "__main__":

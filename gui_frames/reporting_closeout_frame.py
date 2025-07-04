@@ -166,24 +166,18 @@ class ReportingCloseoutModuleFrame(BaseModuleFrame):
             self.show_message("Error", "Reporting module not available.", True)
             return
 
-        # Get current user's employee ID
-        employee_id = self.app.user_manager.get_user_id_by_username(self.app.current_username)
-        if not employee_id: # In schema, users.id is app user, Employees.EmployeeID is for staff.
-                            # UserManagement.get_user_id_by_username returns the users.id.
-                            # We need EmployeeID. Assume a mapping or that username IS employee identifier for now.
-                            # Or, more realistically, UserManagement should provide the linked EmployeeID.
-                            # For now, let's assume get_user_id_by_username returns the required ID or we pass current_username.
-                            # The backend reporting.generate_foreman_daily_summary expects employee_id.
-            self.show_message("Error", "Could not identify current user's employee ID for reporting.", True)
-            # This indicates a need to ensure UserManagement can provide an EmployeeID from Employees table
-            # linked to the app user. For now, we pass what we have, backend might need adjustment or better ID source.
-            return
+        user_details = self.app.user_manager.get_user_details_by_username(self.app.current_username)
+        employee_db_id = user_details.get('employee_db_id') if user_details else None
 
+        if not employee_db_id:
+            self.show_message("User Error", "Current user not linked to an Employee record. Cannot generate Foreman Daily Summary.", True, parent=self)
+            logger.warning(f"Foreman daily summary generation blocked for app user {self.app.current_username} due to missing EmployeeID link.")
+            return
 
         summary_text, success, msg = reporting_module.generate_foreman_daily_summary(
             project_id=self.app.active_project_id,
-            employee_id=employee_id, # Pass the app user's ID, backend needs to handle this.
-            log_date=datetime.now().strftime("%Y-%m-%d") # Report for today's date
+            employee_id=employee_db_id, # Pass the actual EmployeeID
+            log_date=datetime.now().strftime("%Y-%m-%d")
         )
 
         if success:
