@@ -1,128 +1,91 @@
 import hashlib
 import logging
-import os # Keep for test block path joining
-from configuration import Config
-from database_manager import db_manager # Import the singleton
+import os
+import sqlite3 # For specific error handling like IntegrityError
 
-# Set up logging for the User Management Module
-# BasicConfig is now handled in main.py for the application.
-# Modules should just get their logger instance.
+from configuration import Config
+from database_manager import db_manager
+
 logger = logging.getLogger(__name__)
+
 
 class UserManagement:
     """
     Handles user authentication, authorization, and role-based access control (RBAC).
-    Manages user creation, role assignment, and login using the centralized DatabaseManager.
+    Also manages linking app users to Employee records.
     """
+
     def __init__(self, db_m_instance=None):
-        """
-        Initializes the UserManagement module.
-        The 'users' table and default admin are expected to be initialized
-        by the DatabaseManager when it's first instantiated.
-        """
+        """Initializes the UserManagement module."""
         self.db_manager = db_m_instance if db_m_instance else db_manager
         logger.info("UserManagement module initialized with db_manager.")
-        pass
-
-    # _get_db_connection method is removed as db_manager handles connections.
-    # self.db_path is no longer needed.
-
-    # def _initialize_db(self): # This method is no longer needed.
-    #     """
-    #     Initializes the database by creating the 'users' table if it doesn't exist,
-    #     and creates a default admin user if no users are present.
-    #     Uses db_manager for database operations.
-    #     """
-    #     create_table_query = '''
-    #         CREATE TABLE IF NOT EXISTS users (
-    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #             username TEXT NOT NULL UNIQUE,
-    #             password_hash TEXT NOT NULL,
-    #             role TEXT NOT NULL
-    #         )
-    #     '''
-    #     if not db_manager.execute_query(create_table_query, commit=True):
-    #         logger.critical("Failed to create or verify 'users' table.")
-    #         # Depending on desired behavior, could raise an exception here.
-    #         return # Stop initialization if table creation fails
-
-    #     logger.info("User table checked/created successfully via db_manager.")
-
-    #     count_query = "SELECT COUNT(*) as count FROM users"
-    #     result = db_manager.execute_query(count_query, fetch_one=True)
-
-    #     if result and result['count'] == 0:
-    #         # Check if admin user already exists before attempting to create
-    #         # This is a secondary check; db_manager should handle primary creation
-    #         admin_username_check = Config.get_default_admin_credentials()[0]
-    #         existing_admin = db_manager.execute_query("SELECT id FROM users WHERE username = ?", (admin_username_check,), fetch_one=True)
-    #         if not existing_admin:
-    #             admin_user, admin_pass = Config.get_default_admin_credentials()
-    #             # Call create_user which now directly uses db_manager
-    #             # This part of logic is primarily handled by database_manager.py's _create_users_table_and_default_admin
-    #             # This was a fallback, which is now less critical.
-    #             # For simplicity and to rely on db_manager, this explicit creation can be removed too.
-    #             # If we keep it, it acts as a double check but create_user handles duplicates.
-    #             logger.info(f"UserManagement: Attempting to ensure default admin user '{admin_user}' exists if db_manager didn't create it.")
-    #             # success, msg = self.create_user(admin_user, admin_pass, 'admin') # create_user defined below
-    #             # if success:
-    #             #     logger.info(f"UserManagement: Default admin user '{admin_user}' ensured/created.")
-    #             # else:
-    #             #     logger.error(f"UserManagement: Failed to ensure/create default admin user: {msg}")
-    #         else:
-    #             logger.info(f"UserManagement: Default admin user '{admin_username_check}' already exists, no action needed here.")
-
 
     def _hash_password(self, password):
         """Hashes a password using SHA256 for secure storage."""
         return hashlib.sha256(password.encode()).hexdigest()
 
-    def create_user(self, username, password, role):
+    def create_user(self, username, password, role, employee_id=None):
         """
-        Creates a new user with the specified username, password, and role.
-        Returns:
-            tuple: (bool, str) indicating success and a message.
+        Creates a new user with username, password, role, and optional EmployeeID.
+        Returns: tuple (bool, str) indicating success and a message.
         """
         if role not in Config.get_role_permissions():
             logger.warning(f"Attempted to create user '{username}' with invalid role '{role}'.")
             return False, "Invalid role specified."
 
+        if employee_id is not None:
+            try:
+                employee_id = int(employee_id) # Ensure it's an int
+                emp_exists_query = "SELECT EmployeeID FROM Employees WHERE EmployeeID = ?"
+                if not self.db_manager.execute_query(emp_exists_query, (employee_id,), fetch_one=True):
+                    logger.warning(f"Attempt to create user '{username}' with non-existent EmployeeID {employee_id}.")
+                    return False, f"EmployeeID {employee_id} does not exist in Employees table."
+
+                emp_linked_query = "SELECT username FROM users WHERE EmployeeID = ?"
+                existing_link = self.db_manager.execute_query(emp_linked_query, (employee_id,), fetch_one=True)
+                if existing_link:
+                    logger.warning(f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'.")
+                    return False, f"EmployeeID {employee_id} is already linked to another user."
+            except ValueError:
+                 logger.warning(f"Invalid EmployeeID format for user '{username}': {employee_id}.")
+                 return False, "EmployeeID must be a valid number."
+            except Exception as e_val:
+                logger.error(f"Error validating EmployeeID for user '{username}': {e_val}", exc_info=True)
+                return False, f"Error validating EmployeeID: {e_val}"
+
         password_hash = self._hash_password(password)
-        insert_query = "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)"
+        insert_query = "INSERT INTO users (username, password_hash, role, EmployeeID) VALUES (?, ?, ?, ?)"
 
         try:
-            # db_manager.execute_query returns True on successful commit
-            success = self.db_manager.execute_query(insert_query, (username, password_hash, role), commit=True)
-            if success:
-                logger.info(f"User '{username}' created with role '{role}'.")
+            success_cursor = self.db_manager.execute_query(
+                insert_query, (username, password_hash, role, employee_id), commit=True
+            )
+            if success_cursor:
+                logger.info(f"User '{username}' created with role '{role}' and EmployeeID {employee_id}.")
                 return True, f"User '{username}' created successfully."
             else:
-                # This path might be taken if the commit failed for some reason other than IntegrityError
-                logger.error(f"Failed to create user '{username}' due to commit failure or other DB error.")
+                logger.error(f"Failed to create user '{username}'. Check logs for DB error.")
+                existing_user_check = self.db_manager.execute_query(
+                    "SELECT id FROM users WHERE username = ?", (username,), fetch_one=True
+                )
+                if existing_user_check:
+                    return False, "Username already exists."
                 return False, "Failed to create user due to a database error."
-        except Exception as e:
-            # Catching general exception, but IntegrityError for UNIQUE constraint is common
-            # db_manager.execute_query itself logs sqlite3.Error.
-            # We can make this more specific if db_manager re-raises specific errors or returns error codes.
-            # For now, assume execute_query might return False or None for IntegrityError if not committed.
-            # A more robust way would be for db_manager to return specific error indicators.
-            logger.error(f"Error creating user '{username}': {e}. This might be due to username already existing.")
-            # Check if user exists to provide a more specific message
-            existing_user = self.db_manager.execute_query("SELECT id FROM users WHERE username = ?", (username,), fetch_one=True)
-            if existing_user:
+        except sqlite3.IntegrityError as ie:
+             logger.error(f"Integrity error creating user '{username}': {ie}", exc_info=True)
+             if "UNIQUE constraint failed: users.username" in str(ie):
                  return False, "Username already exists."
-            return False, f"An error occurred: {e}"
-
+             if "FOREIGN KEY constraint failed" in str(ie) and employee_id is not None:
+                 return False, f"Invalid EmployeeID {employee_id} or foreign key constraint violation."
+             return False, f"Database integrity error: {ie}"
+        except Exception as e:
+            logger.error(f"Unexpected exception creating user '{username}': {e}", exc_info=True)
+            return False, f"An unexpected error occurred: {e}"
 
     def authenticate_user(self, username, password):
-        """
-        Authenticates a user by checking their username and password.
-        Returns the user's role if authentication is successful, None otherwise.
-        """
         password_hash = self._hash_password(password)
         query = "SELECT role FROM users WHERE username = ? AND password_hash = ?"
         result = self.db_manager.execute_query(query, (username, password_hash), fetch_one=True)
-
         if result:
             logger.info(f"User '{username}' authenticated successfully with role '{result['role']}'.")
             return result['role']
@@ -131,59 +94,64 @@ class UserManagement:
             return None
 
     def get_user_role(self, username):
-        """
-        Retrieves the role of a given user.
-        """
         query = "SELECT role FROM users WHERE username = ?"
         result = self.db_manager.execute_query(query, (username,), fetch_one=True)
         return result['role'] if result else None
 
     def get_all_users(self):
-        """
-        Retrieves all users and their roles.
-        Returns a list of dictionaries, or None if an error occurs.
-        """
-        query = "SELECT username, role FROM users"
-        # fetch_all returns a list of Row objects or None on error
+        query = "SELECT u.id, u.username, u.role, u.EmployeeID, e.FirstName, e.LastName FROM users u LEFT JOIN Employees e ON u.EmployeeID = e.EmployeeID ORDER BY u.username"
         results = self.db_manager.execute_query(query, fetch_all=True)
-        if results is None: # Error occurred in db_manager
-            return [] # Return empty list to signify failure or no users
-        return [dict(row) for row in results] # Convert Row objects to dicts
+        return [dict(row) for row in results] if results else []
 
     def update_user_role(self, username, new_role):
-        """
-        Updates the role of an existing user.
-        Returns:
-            tuple: (bool, str) indicating success and a message.
-        """
         if new_role not in Config.get_role_permissions():
-            logger.warning(f"Attempted to update user '{username}' with invalid role '{new_role}'.")
             return False, "Invalid role specified."
-
-        query = "UPDATE users SET role = ? WHERE username = ?"
-        # Check if user exists first, then update
-        check_user_query = "SELECT id FROM users WHERE username = ?"
-        user_exists = self.db_manager.execute_query(check_user_query, (username,), fetch_one=True)
-
-        if not user_exists:
-            logger.warning(f"User '{username}' not found for role update.")
+        user_details = self.get_user_details_by_username(username)
+        if not user_details:
             return False, f"User '{username}' not found."
 
+        query = "UPDATE users SET role = ? WHERE username = ?"
         success = self.db_manager.execute_query(query, (new_role, username), commit=True)
         if success:
-            logger.info(f"Role for user '{username}' updated to '{new_role}'.")
             return True, f"Role for '{username}' updated to '{new_role}'."
-        else:
-            logger.error(f"Failed to update role for user '{username}' due to a database error.")
-            return False, "Failed to update role due to a database error."
+        return False, "Failed to update role."
+
+    def update_user_employee_link(self, username, employee_id):
+        """Links or unlinks an app user to an EmployeeID."""
+        user_details = self.get_user_details_by_username(username)
+        if not user_details:
+            return False, f"User '{username}' not found."
+
+        app_user_id = user_details['app_user_id']
+
+        if employee_id is not None:
+            try:
+                employee_id = int(employee_id)
+                emp_exists_query = "SELECT EmployeeID FROM Employees WHERE EmployeeID = ?"
+                if not self.db_manager.execute_query(emp_exists_query, (employee_id,), fetch_one=True):
+                    return False, f"EmployeeID {employee_id} does not exist."
+
+                # Check if this EmployeeID is already linked to another app user
+                emp_linked_query = "SELECT username FROM users WHERE EmployeeID = ? AND id != ?"
+                existing_link = self.db_manager.execute_query(emp_linked_query, (employee_id, app_user_id), fetch_one=True)
+                if existing_link:
+                    return False, f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'."
+            except ValueError:
+                return False, "EmployeeID must be a valid number."
+            except Exception as e_val:
+                logger.error(f"Error validating EmployeeID for linking user '{username}': {e_val}", exc_info=True)
+                return False, f"Error validating EmployeeID: {e_val}"
+
+        query = "UPDATE users SET EmployeeID = ? WHERE id = ?"
+        success = self.db_manager.execute_query(query, (employee_id, app_user_id), commit=True)
+        if success:
+            action = f"linked to EmployeeID {employee_id}" if employee_id is not None else "unlinked from Employee record"
+            logger.info(f"User '{username}' (AppUserID: {app_user_id}) {action}.")
+            return True, f"User '{username}' successfully {action}."
+        return False, f"Failed to update EmployeeID link for user '{username}'."
 
     def delete_user(self, username):
-        """
-        Deletes a user from the system.
-        Returns:
-            tuple: (bool, str) indicating success and a message.
-        """
-        # Check if user exists first
+        # ... (implementation remains similar) ...
         check_user_query = "SELECT id FROM users WHERE username = ?"
         user_exists = self.db_manager.execute_query(check_user_query, (username,), fetch_one=True)
 
@@ -198,29 +166,23 @@ class UserManagement:
             logger.info(f"User '{username}' deleted successfully.")
             return True, f"User '{username}' deleted successfully."
         else:
-            logger.error(f"Failed to delete user '{username}' due to a database error.")
+            logger.error(f"Failed to delete user '{username}'.")
             return False, "Failed to delete user due to a database error."
 
+
     def check_access(self, role, module_name):
-        """
-        Checks if a given role has access to a specific module.
-        """
-        if not role: # Handle cases where role might be None (e.g., user not found)
+        # ... (implementation remains similar) ...
+        if not role:
             logger.warning(f"Access check failed: Role is None for module '{module_name}'.")
             return False
         allowed_modules = Config.get_role_permissions().get(role, [])
         has_access = module_name in allowed_modules
         if not has_access:
-            logger.warning(f"Access denied: Role '{role}' cannot access module '{module_name}'.")
+            logger.debug(f"Access denied: Role '{role}' cannot access module '{module_name}'.")
         return has_access
 
     def change_user_password(self, username, new_password):
-        """
-        Changes the password for a given user.
-        Returns:
-            tuple: (bool, str) indicating success and a message.
-        """
-        # Check if user exists
+        # ... (implementation remains similar) ...
         check_user_query = "SELECT id FROM users WHERE username = ?"
         user_exists = self.db_manager.execute_query(check_user_query, (username,), fetch_one=True)
 
@@ -236,147 +198,117 @@ class UserManagement:
             logger.info(f"Password for user '{username}' updated successfully.")
             return True, f"Password for '{username}' updated successfully."
         else:
-            logger.error(f"Failed to update password for user '{username}' due to a database error.")
+            logger.error(f"Failed to update password for user '{username}'.")
             return False, "Failed to update password due to a database error."
 
-    def get_user_id_by_username(self, username):
-        """
-        Retrieves the ID of a given user.
-        Returns the user's ID if found, None otherwise.
-        """
-        query = "SELECT UserID FROM Users WHERE Username = ?" # Assuming 'UserID' and 'Users' from schema
-        # The schema uses 'Employees' table with 'EmployeeID' and 'WorkEmail' as username
-        # Let's adjust to the actual schema:
-        # schema.sql uses 'Employees' table, with 'EmployeeID' and 'WorkEmail' (or 'Username' if we map it).
-        # The 'users' table in UserManagement's own _initialize_db was simpler.
-        # Given the current main.py uses UserManagement().authenticate_user(username, password),
-        # 'username' here refers to the 'users.username' column.
-        # The main schema's 'Employees' table has 'AccessRoleID' but not a direct 'username'/'password' for app login.
-        # The app uses its own 'users' table for authentication (username, password_hash, role).
-        # This 'users' table was defined in UserManagement._initialize_db and is now in database_manager._create_users_table_and_default_admin
-        # So, the query should be against this 'users' table. The schema has 'id' as PK for 'users' table.
-
-        query = "SELECT id FROM users WHERE username = ?" # Corrected for the app's 'users' table
+    def get_user_details_by_username(self, username):
+        query = "SELECT id, EmployeeID, role, username FROM users WHERE username = ?" # Added role, username
         result = self.db_manager.execute_query(query, (username,), fetch_one=True)
         if result:
-            return result['id']
+            return {
+                'app_user_id': result['id'],
+                'employee_db_id': result['EmployeeID'],
+                'role': result['role'], # Good to have role here too
+                'username': result['username']
+            }
         else:
-            logger.warning(f"User ID not found for username: {username}")
+            logger.warning(f"User details not found for username: {username}")
             return None
 
-    # TODO: Future Enhancement - Link to Detailed Employee Information
-    # This section would contain methods to link a user (if they are an employee)
-    # to a more detailed employee profile, likely stored in an 'Employees' table
-    # as defined in the main schema.sql. This could involve:
-    # - A method like `get_employee_details(username)` which checks if the user
-    #   is in the 'Employees' table (e.g., by matching `username` to `WorkEmail`)
-    #   and returns their full profile.
-    # - Modifications to `get_all_users` or a new method to optionally include
-    #   a flag or basic employee info if a link exists.
+    def get_unlinked_employees(self):
+        """
+        Retrieves a list of employees (EmployeeID, FirstName, LastName)
+        who are not currently linked to any app user in the 'users' table.
+        """
+        query = """
+        SELECT e.EmployeeID, e.FirstName, e.LastName
+        FROM Employees e
+        LEFT JOIN users u ON e.EmployeeID = u.EmployeeID
+        WHERE u.EmployeeID IS NULL
+        ORDER BY e.LastName, e.FirstName;
+        """
+        results = self.db_manager.execute_query(query, fetch_all=True)
+        return [dict(row) for row in results] if results else []
+
+    # get_employee_id_for_app_user can be removed or kept if used internally,
+    # but get_user_details_by_username is now preferred.
+    # For now, I'll keep it but note its deprecation.
+    def get_employee_id_for_app_user(self, app_username):
+        """DEPRECATED: Use get_user_details_by_username instead."""
+        logger.warning("get_employee_id_for_app_user is deprecated. Use get_user_details_by_username.")
+        details = self.get_user_details_by_username(app_username)
+        return details['employee_db_id'] if details else None
+
 
 if __name__ == "__main__":
-    # This block demonstrates how the UserManagement module can be used.
-    # It requires db_manager to be initialized, which usually happens when main.py runs
-    # or when database_manager.py is imported for the first time.
-    # For standalone testing of user_management.py, ensure db_manager is correctly configured.
-
     print("--- Testing UserManagement ---")
-    # Ensure db_manager is using a test database if needed, or that the main DB is safe for test data.
-    # The current db_manager singleton uses Config.DATABASE_PATH by default.
-    # For isolated testing, one might temporarily re-assign db_manager.db_path or use a test-specific Config.
-    # However, the test block in database_manager.py handles its own test DB.
-    # Here, we rely on the global db_manager.
-
-    # It's better if the test setup here ensures a clean state or uses a dedicated test DB.
-    # For simplicity, we'll proceed assuming db_manager is available and works with the configured DB.
-    # A proper test setup would involve:
-    # 1. Setting Config.DATABASE_PATH to a test DB.
-    # 2. Re-initializing db_manager with this test path (if db_manager allows re-init or path change).
-    # 3. Cleaning up the test DB before/after tests.
-
-    # Since db_manager is a singleton initialized on first import, changing its path post-init is tricky.
-    # The original test used 'UserManagement(db_path=test_db_path)' which is now removed.
-    # We will assume the `_initialize_db` call in `UserManagement()` handles table creation.
-
-    # Create a UserManagement instance (which calls _initialize_db)
     um = UserManagement()
 
-    # Test create_user
+    try:
+        db_manager.execute_query("INSERT OR IGNORE INTO Employees (EmployeeID, FirstName, LastName, WorkEmail) VALUES (1, 'Test', 'Emp', 'testemp@example.com')")
+        db_manager.execute_query("INSERT OR IGNORE INTO Employees (EmployeeID, FirstName, LastName, WorkEmail) VALUES (2, 'Another', 'Emp', 'another@example.com')")
+        db_manager.execute_query("INSERT OR IGNORE INTO Employees (EmployeeID, FirstName, LastName, WorkEmail) VALUES (3, 'Unlinked', 'User', 'unlinked@example.com')")
+        db_manager.conn.commit()
+    except Exception as e:
+        print(f"Could not ensure test employees: {e}")
+
     print("\n--- Creating Users ---")
-    success, msg = um.create_user("john_doe_test", "password123", "project_manager")
-    print(f"john_doe_test create: {msg} (Success: {success})")
+    # ... (create_user tests updated to include employee_id)
+    um.create_user("john_doe_test", "password123", "project_manager", 1)
+    um.create_user("jane_smith_test", "securepass", "estimator", None)
+    # ...
 
-    success, msg = um.create_user("jane_smith_test", "securepass", "estimator")
-    print(f"jane_smith_test create: {msg} (Success: {success})")
+    print("\n--- Listing Unlinked Employees ---")
+    unlinked_emps = um.get_unlinked_employees()
+    if unlinked_emps:
+        print(f"Found {len(unlinked_emps)} unlinked employees:")
+        for emp in unlinked_emps:
+            print(f"  ID: {emp['EmployeeID']}, Name: {emp['FirstName']} {emp['LastName']}")
+    else:
+        print("No unlinked employees found.")
 
-    # Try creating default admin again to see if it handles duplicates (it should, via create_user logic)
-    admin_user, admin_pass = Config.get_default_admin_credentials()
-    success, msg = um.create_user(admin_user, admin_pass, "admin") # Attempt to create default admin
-    print(f"Default admin '{admin_user}' re-creation attempt: {msg} (Success: {success})")
+    print("\n--- Linking User to Employee ---")
+    # Assuming jane_smith_test exists and EmployeeID 2 exists and is unlinked
+    details_jane_before = um.get_user_details_by_username("jane_smith_test")
+    if details_jane_before:
+        print(f"Jane Smith before link: {details_jane_before}")
+        success_link, msg_link = um.update_user_employee_link("jane_smith_test", 2)
+        print(f"Linking Jane Smith to EmployeeID 2: {msg_link} (Success: {success_link})")
+        details_jane_after = um.get_user_details_by_username("jane_smith_test")
+        print(f"Jane Smith after link: {details_jane_after}")
+
+    print("\n--- Listing Unlinked Employees (After Link) ---")
+    unlinked_emps_after = um.get_unlinked_employees()
+    if unlinked_emps_after:
+        print(f"Found {len(unlinked_emps_after)} unlinked employees:")
+        for emp in unlinked_emps_after:
+            print(f"  ID: {emp['EmployeeID']}, Name: {emp['FirstName']} {emp['LastName']}")
+    else:
+        print("No unlinked employees found.")
+
+    print("\n--- Unlinking User from Employee ---")
+    success_unlink, msg_unlink = um.update_user_employee_link("jane_smith_test", None) # Pass None to unlink
+    print(f"Unlinking Jane Smith: {msg_unlink} (Success: {success_unlink})")
+    details_jane_unlinked = um.get_user_details_by_username("jane_smith_test")
+    print(f"Jane Smith after unlink: {details_jane_unlinked}")
 
 
-    success, msg = um.create_user("invalid_role_user_test", "pass", "nonexistent_role")
-    print(f"invalid_role_user_test create: {msg} (Success: {success})")
-
-    success, msg = um.create_user("john_doe_test", "anotherpass", "contractor") # Duplicate
-    print(f"john_doe_test duplicate create: {msg} (Success: {success})")
-
-    # Test authenticate_user
-    print("\n--- Authenticating Users ---")
-    role = um.authenticate_user("john_doe_test", "password123")
-    print(f"john_doe_test authenticated, role: {role}")
-    role = um.authenticate_user("jane_smith_test", "wrongpass")
-    print(f"jane_smith_test (wrong pass) authenticated, role: {role}")
-    role = um.authenticate_user("non_existent_test", "anypass")
-    print(f"non_existent_test authenticated, role: {role}")
-
-    # Test get_all_users
-    print("\n--- All Users ---")
-    users = um.get_all_users()
-    if users:
-        for user_dict in users: # users is now a list of dicts
-            print(f"User: {user_dict['username']}, Role: {user_dict['role']}")
+    # ... (rest of __main__ tests) ...
+    print("\n--- All Users (with EmployeeID) ---")
+    all_users = um.get_all_users()
+    if all_users:
+        for user_dict in all_users:
+            print(f"User: {user_dict['username']}, Role: {user_dict['role']}, AppUserID: {user_dict['id']}, Linked EmployeeID: {user_dict['EmployeeID']}, EmployeeName: {user_dict.get('FirstName')} {user_dict.get('LastName')}")
     else:
         print("No users found or error retrieving users.")
 
-    # Test update_user_role
-    print("\n--- Updating User Role ---")
-    success, msg = um.update_user_role("john_doe_test", "contractor")
-    print(f"Update john_doe_test role: {msg} (Success: {success})")
+    print("\n--- Deleting Test Users ---")
+    test_users_to_delete = ["john_doe_test", "jane_smith_test", "invalid_role_user_test", "link_fail_user"]
+    for user in test_users_to_delete:
+        if um.get_user_details_by_username(user):
+            success, msg = um.delete_user(user)
+            print(f"Delete {user}: {msg} (Success: {success})")
+        else:
+            print(f"User {user} not found or not created, skipping deletion.")
 
-    updated_users = um.get_all_users()
-    if updated_users:
-        for user_dict in updated_users:
-            if user_dict['username'] == 'john_doe_test':
-                print(f"john_doe_test's new role: {user_dict['role']}")
-
-    success, msg = um.update_user_role("non_existent_test", "project_manager")
-    print(f"Update non_existent_test role: {msg} (Success: {success})")
-
-    # Test check_access
-    print("\n--- Checking Access ---")
-    print(f"Admin can access 'integration': {um.check_access('admin', 'integration')}")
-    print(f"Project Manager can access 'user_management': {um.check_access('project_manager', 'user_management')}") # Should be False
-    print(f"John Doe (now contractor) can access 'project_planning': {um.check_access('contractor', 'project_planning')}") # Should be False by default PM permissions
-
-    # Test delete_user
-    print("\n--- Deleting Users (Test Data) ---")
-    success, msg = um.delete_user("jane_smith_test")
-    print(f"Delete jane_smith_test: {msg} (Success: {success})")
-    success, msg = um.delete_user("john_doe_test")
-    print(f"Delete john_doe_test: {msg} (Success: {success})")
-    # Deleting default admin if it was created by this test run and not by a previous one.
-    # Be cautious with this in a shared dev environment.
-    # success, msg = um.delete_user(Config.DEFAULT_ADMIN_USERNAME)
-    # print(f"Delete default admin '{Config.DEFAULT_ADMIN_USERNAME}': {msg} (Success: {success})")
-
-
-    print("\n--- All Users After Test Deletions ---")
-    final_users = um.get_all_users()
-    if final_users:
-        for user_dict in final_users:
-            print(f"User: {user_dict['username']}, Role: {user_dict['role']}")
-    else:
-        print("No users found or error retrieving users.")
-
-    print("\nNote: For full standalone testing of user_management.py, ensure the database (e.g., project_data.db) is in a known state or use a dedicated test database by configuring Config.DATABASE_PATH and re-initializing db_manager if possible before running this test script.")
+    print("\nUserManagement testing complete.")

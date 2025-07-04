@@ -1,24 +1,21 @@
 import importlib
 import os
 import logging
+import sys # Added sys for sys.path manipulation
 
-# Set up logging for the Plugin Registry
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 class PluginRegistry:
     """
-    Manages the dynamic loading and registration of system modules (plugins).
-    Allows for new modules to be added without modifying core code.
+    Manages dynamic loading and registration of system modules (plugins).
     """
     _registered_modules = {}
 
     @classmethod
     def register_module(cls, module_name, module_instance):
         """
-        Registers a module instance with the registry.
-        The module_name should be a unique identifier (e.g., its filename without .py).
-        The module_instance should be an instantiated object of the module's main class.
+        Registers a module instance.
         """
         if module_name in cls._registered_modules:
             logger.warning(f"Module '{module_name}' is already registered. Overwriting.")
@@ -28,8 +25,7 @@ class PluginRegistry:
     @classmethod
     def get_module(cls, module_name):
         """
-        Retrieves a registered module instance by its name.
-        Returns None if the module is not found.
+        Retrieves a registered module instance. Returns None if not found.
         """
         module = cls._registered_modules.get(module_name)
         if not module:
@@ -38,37 +34,31 @@ class PluginRegistry:
 
     @classmethod
     def list_registered_modules(cls):
-        """
-        Returns a list of all names of currently registered modules.
-        """
+        """Returns a list of names of registered modules."""
         return list(cls._registered_modules.keys())
 
     @classmethod
     def load_module_from_file(cls, file_path, module_name=None):
         """
-        Dynamically loads a Python module from a given file path.
-        Optionally accepts a module_name; otherwise, derives it from the file name.
-        Returns the loaded module object.
+        Dynamically loads a Python module from a file path.
         """
         if not os.path.exists(file_path):
             logger.error(f"Module file not found: {file_path}")
             return None
 
-        # Derive module name from file path if not provided
         if module_name is None:
             module_name = os.path.splitext(os.path.basename(file_path))[0]
 
-        # Add the directory to Python's path to allow importlib.import_module
         module_dir = os.path.dirname(file_path)
-        if module_dir not in importlib.sys.path:
-            importlib.sys.path.insert(0, module_dir)
+        # Ensure module_dir is absolute and in sys.path for reliable import
+        if module_dir not in sys.path: # Use sys.path directly
+            sys.path.insert(0, module_dir) # Add to beginning for higher precedence
             logger.debug(f"Added '{module_dir}' to sys.path for module loading.")
 
+        # If file_path is relative, make it absolute relative to some known base if necessary
+        # For now, assuming file_path is either absolute or correctly relative from CWD
+
         try:
-            # Use importlib to load the module
-            # The actual module name for importlib needs to be relative to the path added
-            # For simplicity, we'll assume the module is directly in a path added to sys.path
-            # For more complex package structures, use importlib.util.spec_from_file_location
             module = importlib.import_module(module_name)
             logger.info(f"Dynamically loaded module from {file_path} as '{module_name}'.")
             return module
@@ -76,92 +66,111 @@ class PluginRegistry:
             logger.error(f"Failed to import module '{module_name}' from '{file_path}': {e}")
             return None
         except Exception as e:
-            logger.error(f"An unexpected error occurred while loading module '{module_name}' from '{file_path}': {e}")
+            logger.error(f"Unexpected error loading module '{module_name}' from '{file_path}': {e}")
             return None
+        finally:
+            # Clean up sys.path if it was modified, though this can be tricky
+            # if other imports depend on this path later.
+            # For a simple script-like plugin loader, it might be okay to leave it.
+            # If this registry is long-lived, consider removing the path carefully.
+            # if module_dir in sys.path and module_dir == sys.path[0]:
+            #    sys.path.pop(0)
+            #    logger.debug(f"Removed '{module_dir}' from sys.path after attempt.")
+            pass
+
 
     @classmethod
     def initialize_and_register_modules(cls, module_paths_and_classes):
         """
         Initializes and registers multiple modules.
-        module_paths_and_classes is a dictionary where keys are module names (e.g., 'integration')
-        and values are tuples (file_path, class_name_in_module).
+        module_paths_and_classes: dict {module_name: (file_path, class_name)}
         """
         for mod_name, (file_path, class_name) in module_paths_and_classes.items():
             loaded_module = cls.load_module_from_file(file_path, mod_name)
             if loaded_module:
                 try:
-                    # Get the class from the loaded module and instantiate it
                     module_class = getattr(loaded_module, class_name)
-                    # All modules are expected to handle their own dependencies (like db_manager)
-                    # by importing them directly if they are singletons, or via other DI means.
-                    # The registry's role is to load and provide access to the module's main class instance.
+                    # Assuming modules handle their own dependencies (e.g., db_manager)
                     instance = module_class()
                     cls.register_module(mod_name, instance)
                 except AttributeError:
-                    logger.error(f"Class '{class_name}' not found in module '{mod_name}' from '{file_path}'.")
+                    logger.error(f"Class '{class_name}' not found in module '{mod_name}'.")
                 except Exception as e:
-                    logger.error(f"Error instantiating class '{class_name}' from module '{mod_name}': {e}")
+                    logger.error(f"Error instantiating class '{class_name}' from '{mod_name}': {e}")
             else:
-                logger.error(f"Could not load module '{mod_name}' from '{file_path}'. Skipping registration.")
+                logger.error(f"Could not load module '{mod_name}'. Skipping registration.")
+
 
 if __name__ == "__main__":
-    # This block demonstrates how PluginRegistry would be used.
-    # In a real scenario, main.py would call initialize_and_register_modules.
-
     print("--- Testing PluginRegistry ---")
 
-    # Create dummy modules for testing
-    dummy_module_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dummy_modules')
+    # Create dummy module directory relative to this script's location
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    dummy_module_dir = os.path.join(current_script_dir, 'dummy_modules_test')
     os.makedirs(dummy_module_dir, exist_ok=True)
 
-    dummy_module_1_path = os.path.join(dummy_module_dir, 'dummy_module_1.py')
+    # Create __init__.py to make it a package (helps with predictable imports)
+    with open(os.path.join(dummy_module_dir, '__init__.py'), 'w') as f:
+        f.write('') # Empty __init__.py
+
+    dummy_module_1_filename = 'dummy_module_1.py'
+    dummy_module_1_path = os.path.join(dummy_module_dir, dummy_module_1_filename)
     with open(dummy_module_1_path, 'w') as f:
         f.write("""
 class DummyModule1:
     def __init__(self):
-        print("DummyModule1 initialized!")
+        print("DummyModule1 instance created!")
     def run(self):
         return "DummyModule1 running!"
 """)
 
-    dummy_module_2_path = os.path.join(dummy_module_dir, 'dummy_module_2.py')
+    dummy_module_2_filename = 'dummy_module_2.py'
+    dummy_module_2_path = os.path.join(dummy_module_dir, dummy_module_2_filename)
     with open(dummy_module_2_path, 'w') as f:
         f.write("""
 class DummyModule2:
     def __init__(self):
-        print("DummyModule2 initialized!")
+        print("DummyModule2 instance created!")
     def process_data(self, data):
         return f"DummyModule2 processing: {data}"
 """)
 
-    # Define the modules to load and their main classes
-    # Note: For actual system modules, file_path will be ../integration.py, etc.
+    # Add the parent of dummy_modules_test to sys.path so it can be found as a package
+    # This simulates if dummy_modules_test was a top-level package in the project
+    # For this test, plugin_registry.py is in 'plugins', dummy_modules_test is in 'plugins/dummy_modules_test'
+    # So, 'plugins' directory should be in sys.path for 'import dummy_modules_test.dummy_module_1'
+    # The load_module_from_file method temporarily adds the direct parent of the module file.
+
+    # Modules to load are specified by their Python importable name, not file path directly here.
+    # The load_module_from_file method handles path manipulation for importlib.
+
+    # Re-think: initialize_and_register_modules expects file_path.
+    # The module name passed to import_module should be the filename without .py if it's in sys.path.
+
     modules_to_load = {
+        # module_name_for_registry: (path_to_file, ClassNameInFile)
         'dummy_module_1': (dummy_module_1_path, 'DummyModule1'),
         'dummy_module_2': (dummy_module_2_path, 'DummyModule2')
     }
 
-    # Initialize and register the dummy modules
     PluginRegistry.initialize_and_register_modules(modules_to_load)
 
-    # List registered modules
     print(f"\nRegistered modules: {PluginRegistry.list_registered_modules()}")
 
-    # Retrieve and use a module
     mod1 = PluginRegistry.get_module('dummy_module_1')
     if mod1:
-        print(f"Retrieved dummy_module_1: {mod1.run()}")
+        print(f"Test dummy_module_1: {mod1.run()}")
 
     mod2 = PluginRegistry.get_module('dummy_module_2')
     if mod2:
-        print(f"Retrieved dummy_module_2: {mod2.process_data('test_data')}")
+        print(f"Test dummy_module_2: {mod2.process_data('sample data')}")
 
-    # Try to retrieve a non-existent module
-    non_existent_mod = PluginRegistry.get_module('non_existent_module')
-    print(f"Retrieved non_existent_module: {non_existent_mod}")
+    non_existent = PluginRegistry.get_module('non_existent')
+    print(f"Test non_existent_module: {non_existent}")
 
-    # Clean up dummy files and directory
+    # Cleanup
     os.remove(dummy_module_1_path)
     os.remove(dummy_module_2_path)
+    os.remove(os.path.join(dummy_module_dir, '__init__.py'))
     os.rmdir(dummy_module_dir)
-    print("\nCleaned up dummy modules.")
+    print("\nCleaned up dummy_modules_test.")

@@ -1,10 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog, messagebox
 import os
-from datetime import datetime
+# from datetime import datetime # No longer needed here, backend handles it
 from .base_frame import BaseModuleFrame
 from configuration import Config # For Config.get_data_dir()
-from database_manager import db_manager # For direct db calls like in add_document_note
+# from database_manager import db_manager # No longer needed for direct calls here
 from tkPDFViewer import tkPDFViewer # For PDF viewing
 
 # Logger setup
@@ -247,28 +247,20 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         description = simpledialog.askstring("Input", "Enter description for the drawing (optional):", parent=self)
         document_name = os.path.basename(file_path)
 
-        uploaded_by_employee_id = self.app.user_manager.get_user_id_by_username(self.app.current_username)
-        if not uploaded_by_employee_id: # This gets users.id, ensure backend handles it or maps to Employees.EmployeeID
-            self.show_message("Error", "Could not identify current user's employee ID.", True)
-            # Fallback or error handling, e.g. uploaded_by_employee_id = 1 (generic admin)
-            # This depends on how ProjectDocuments.UploadedByEmployeeID is meant to be used.
-            # For now, let's assume the backend (project_startup.add_design_drawing) can handle users.id.
-            # If it strictly needs Employees.EmployeeID, then UserManagement or app needs to provide that link.
-            # Based on schema, ProjectDocuments.UploadedByEmployeeID links to Employees.EmployeeID.
-            # This is a known point of friction if user_manager.get_user_id_by_username returns app user id.
-            # TEMP FIX: Pass a placeholder if real EmployeeID mapping is not ready.
-            # This should be properly resolved by linking app users to employee records.
-            logger.warning(f"Using placeholder EmployeeID for drawing upload by {self.app.current_username}. User-Employee link needed.")
-            # uploaded_by_employee_id = 1 # Placeholder Admin EmployeeID from schema if it exists.
-                                        # For now, let's proceed with user_id and let backend handle it.
+        user_details = self.app.user_manager.get_user_details_by_username(self.app.current_username)
+        employee_db_id = user_details.get('employee_db_id') if user_details else None
+
+        if not employee_db_id:
+            self.show_message("Error", "Could not identify linked Employee ID for the current user. Please ensure your app user is linked to an employee record in User Management.", True)
+            logger.warning(f"No linked EmployeeID for app user {self.app.current_username} for drawing upload.")
+            return # Cannot proceed without a valid EmployeeID
 
         if self.module and hasattr(self.module, 'add_design_drawing'):
-            # Backend add_design_drawing needs: project_id, document_name, file_path, uploaded_by_employee_id, description
             document_id, message = self.module.add_design_drawing(
                 self.app.active_project_id, document_name, file_path,
-                uploaded_by_employee_id, description
+                employee_db_id, description # Pass the actual EmployeeID
             )
-            self.show_message("Add Design Drawing", message, not document_id) # document_id is true-ish on success
+            self.show_message("Add Design Drawing", message, is_error=not bool(document_id))
             if document_id:
                 self.load_design_drawings()
         else:
@@ -404,54 +396,46 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             self.show_message("Invalid Page", "Page number is invalid.", True)
             return
 
-        # EmployeeID from current logged-in user
-        # This again assumes get_user_id_by_username returns an ID compatible with Employees.EmployeeID
-        # or that the backend note-adding logic can handle the app's user ID.
-        employee_id = self.app.user_manager.get_user_id_by_username(self.app.current_username)
-        if not employee_id:
-            self.show_message("Error", "Could not identify the current user's Employee ID.", True)
+        user_details = self.app.user_manager.get_user_details_by_username(self.app.current_username)
+        employee_db_id = user_details.get('employee_db_id') if user_details else None
+
+        if not employee_db_id:
+            self.show_message("Error", "Could not identify linked Employee ID for the current user. Notes cannot be saved.", True)
+            logger.warning(f"No linked EmployeeID for app user {self.app.current_username} for adding document note.")
             return
 
-        # Call backend to add note (this method needs to be in project_startup.py or similar)
-        # For now, using direct db_manager call as in original main.py snippet.
-        # This should ideally be moved to the backend module (self.module.add_document_note(...))
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        query = "INSERT INTO document_notes (document_id, page_number, employee_id, note_text, created_at) VALUES (?, ?, ?, ?, ?)"
-        # Make sure 'document_id' here is the ProjectDocumentID from ProjectDocuments table
-        params = (document_id, page_number, employee_id, note_text, created_at)
-
-        # db_manager is imported at the top of this file
-        success = db_manager.execute_query(query, params, commit=True)
-        if success:
-            self.show_message("Note Added", "Note added successfully.")
-            entry_widget.delete("1.0", tk.END)
-            self._load_document_notes_action(document_id, display_widget) # Refresh display
+        # Call backend to add note
+        if self.module and hasattr(self.module, 'add_document_note'):
+            success, message = self.module.add_document_note(
+                document_id, page_number, employee_db_id, note_text # Use employee_db_id
+            )
+            self.show_message("Add Note", message, is_error=not success)
+            if success:
+                entry_widget.delete("1.0", tk.END)
+                self._load_document_notes_action(document_id, display_widget) # Refresh display
         else:
-            self.show_message("Error", "Failed to add note to the database.", True)
+            self.show_message("Error", "Document notes backend functionality not available.", True)
+            logger.error("ProjectStartup module or add_document_note method not available in frame.")
 
     def _load_document_notes_action(self, document_id, display_widget):
         display_widget.config(state='normal') # Enable for modification
         display_widget.delete("1.0", tk.END)
 
-        # Joins with Employees table to get name. Assumes Employees.id is the FK.
-        # Check schema: document_notes.employee_id -> Employees.EmployeeID
-        query = """
-            SELECT dn.page_number, e.FirstName, e.LastName, dn.note_text, dn.created_at
-            FROM document_notes dn
-            JOIN Employees e ON dn.employee_id = e.EmployeeID
-            WHERE dn.document_id = ?
-            ORDER BY dn.page_number, dn.created_at
-        """
-        # db_manager is imported at the top
-        notes = db_manager.execute_query(query, (document_id,), fetch_all=True)
-        if notes:
-            for note in notes:
-                note_str = (f"Page {note['page_number']} | "
-                            f"{note['FirstName']} {note['LastName']} ({note['created_at']}):\n"
-                            f"{note['note_text']}\n{'-'*30}\n")
-                display_widget.insert(tk.END, note_str)
+        if self.module and hasattr(self.module, 'get_document_notes'):
+            notes = self.module.get_document_notes(document_id)
+            if notes:
+                for note in notes:
+                    # Backend now returns dicts with 'FirstName', 'LastName' etc.
+                    note_str = (f"Page {note['page_number']} | "
+                                f"{note['FirstName']} {note['LastName']} ({note['created_at']}):\n"
+                                f"{note['note_text']}\n{'-'*30}\n")
+                    display_widget.insert(tk.END, note_str)
+            else:
+                display_widget.insert(tk.END, "No notes for this document yet or failed to load.")
         else:
-            display_widget.insert(tk.END, "No notes for this document yet.")
+            display_widget.insert(tk.END, "Error: Could not load notes. Backend functionality missing.")
+            logger.error("ProjectStartup module or get_document_notes method not available in frame.")
+
         display_widget.config(state='disabled') # Make read-only again
 
 
@@ -475,32 +459,39 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             self.show_message("Cancelled", "Execute Data DNA cancelled by user.")
             return
 
-        # Step 1: Link estimates and Generate WBS
+        # Step 1: Generate WBS (which now includes linking estimates)
+        # The backend method generate_wbs_from_estimates handles the core logic.
         wbs_success, wbs_msg = self.module.generate_wbs_from_estimates(project_id)
-        self.show_message("WBS Generation", f"Project '{project_name}': {wbs_msg}", not wbs_success)
+        self.show_message("WBS Generation", f"Project '{project_name}' - WBS Status: {wbs_msg}", is_error=not wbs_success)
         if not wbs_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed at WBS generation.")
+            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at WBS generation step.")
+            # Decide if we should stop or continue if WBS generation wasn't fully successful but didn't hard fail
+            # For now, let's return if wbs_success is False (indicating a definitive failure)
             return
 
-        # Step 2: Generate Budget
+        # Step 2: Generate Budget (relies on WBS being present)
         budget_success, budget_msg = self.module.generate_project_budget(project_id)
-        self.show_message("Budget Generation", f"Project '{project_name}': {budget_msg}", not budget_success)
+        self.show_message("Budget Generation", f"Project '{project_name}' - Budget Status: {budget_msg}", is_error=not budget_success)
         if not budget_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed at Budget generation.")
-            return
+            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at Budget generation step.")
+            # Potentially return, or just log and continue to resource allocation
 
-        # Step 3: Allocate Resources
-        resources_success, resources_msg = self.module.allocate_resources(project_id)
-        self.show_message("Resource Allocation", f"Project '{project_name}': {resources_msg}", not resources_success)
+        # Step 3: Allocate Resources (relies on WBS/Estimates)
+        resources_success, resources_msg = self.module.allocate_resources(project_id) # This method also needs to exist in backend
+        self.show_message("Resource Allocation", f"Project '{project_name}' - Resource Status: {resources_msg}", is_error=not resources_success)
         if not resources_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed at Resource allocation.")
-            return
+            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at Resource allocation step.")
 
-        self.show_message("Execute Data DNA", f"'Execute Data DNA' completed for project '{project_name}'.")
-        logger.info(f"'Execute Data DNA' process completed for project: {project_name} (ID: {project_id}).")
-        # Optionally, refresh project list in sidebar if status or costs changed
+        # Final message
+        if wbs_success and budget_success and resources_success:
+            self.show_message("Execute Data DNA", f"'Execute Data DNA' process completed successfully for project '{project_name}'.")
+        else:
+            self.show_message("Execute Data DNA", f"'Execute Data DNA' process completed for project '{project_name}' with some issues. Please check logs and messages.", is_error=True)
+
+        logger.info(f"'Execute Data DNA' process finished for project: {project_name} (ID: {project_id}).")
+
         if hasattr(self.app, 'load_project_list_data'):
-            self.app.load_project_list_data()
+            self.app.load_project_list_data() # Refresh project list in sidebar
 
 
     def _get_valid_project_id_from_entry(self, entry_widget=None):
@@ -519,10 +510,10 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         proj_id = self._get_valid_project_id_from_entry()
         if proj_id is None: return
         if self.module and hasattr(self.module, 'generate_wbs_from_estimates'):
-            if not messagebox.askyesno("Confirm Ad-hoc WBS", f"Generate WBS for Project ID {proj_id} using available estimates? This is an ad-hoc operation.", parent=self):
+            if not messagebox.askyesno("Confirm Ad-hoc WBS", f"Generate/Re-generate WBS for Project ID {proj_id} using available estimates? This will clear existing WBS elements for this project.", parent=self):
                 return
-            success, msg = self.module.generate_wbs_from_estimates(proj_id)
-            self.show_message("Ad-hoc WBS Generation", msg, not success)
+            success, msg = self.module.generate_wbs_from_estimates(proj_id) # This now returns (bool, str)
+            self.show_message("Ad-hoc WBS Generation", msg, is_error=not success) # Pass is_error correctly
         else:
             self.show_message("Error", "Project Startup module or WBS method not available.", True)
 

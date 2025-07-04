@@ -290,17 +290,21 @@ class ExecutionManagementModuleFrame(BaseModuleFrame):
         cost_code = self.material_cost_code_entry.get().strip() or None
         supplier = self.material_supplier_entry.get().strip() or None
 
-        # Assume recorded_by_employee_id is handled by backend or passed from app.current_user
-        employee_id = self.app.user_manager.get_user_id_by_username(self.app.current_username)
+        user_details = self.app.user_manager.get_user_details_by_username(self.app.current_username)
+        employee_db_id = user_details.get('employee_db_id') if user_details else None
+
+        if employee_db_id is None:
+            self.show_message("User Error", "Current user not linked to an Employee record. Cannot log material.", True, parent=self)
+            logger.warning(f"Material log blocked for app user {self.app.current_username} due to missing EmployeeID link.")
+            return
 
         success, msg = self.module.log_material_to_db(
             project_id=project_id,
-            material_stock_number=material_identifier, # Backend needs to resolve if it's a name
+            material_stock_number=material_identifier,
             quantity=quantity, unit=unit, supplier=supplier, cost_code=cost_code,
-            recorded_by_employee_id=employee_id # Pass current user's employee ID
-            # wbs_element_id might be another optional field if materials are tied to WBS
+            recorded_by_employee_id=employee_db_id # Pass the actual EmployeeID
         )
-        self.show_message("Log Material", msg, not success)
+        self.show_message("Log Material", msg, is_error=not success)
         if success: # Clear fields
             for entry in [self.material_name_entry, self.material_qty_entry, self.material_unit_entry,
                           self.material_cost_code_entry, self.material_supplier_entry]:

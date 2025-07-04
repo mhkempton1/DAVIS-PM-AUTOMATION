@@ -13,10 +13,18 @@ class BaseModuleFrame(tk.Frame):
 
     def on_active_project_changed(self):
         """
-        Method to be overridden by subclasses if they need to react to active project changes.
+        A placeholder method intended to be overridden by subclasses.
+
+        This method is called by the main application when the globally active
+        project changes. Subclasses should implement this method if they need
+        to refresh their displayed data or state based on the new active project.
         """
-        logger.info(f"{self.__class__.__name__}: Active project changed. Subclass can override this.")
-        # Default implementation does nothing, subclasses will implement specific refresh logic
+        logger.debug(
+            f"{self.__class__.__name__}: Active project changed signal received. "
+            "Subclass can override this method to implement specific refresh logic."
+        )
+        # Default implementation does nothing; subclasses should provide specifics.
+        pass
 
     def show_message(self, title, message, is_error=False):
         """

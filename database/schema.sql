@@ -3,14 +3,16 @@
 -- Purpose: Creates the database schema for Davis Electric operations.        --
 -- Features: Schemas, NVARCHAR, Normalized Statuses & Employee Skills       --
 -- Generated On: Friday, April 18, 2025 -- You're welcome! ;)               --
+-- Version 2: Consolidated by AI Agent (Jules) - July 2025                  --
 -- ========================================================================== --
 
 -- == Drop Objects In Reverse Order of Creation (Safety First!) ==
-DROP TABLE IF EXISTS LaborLevels; -- New
-DROP TABLE IF EXISTS TaskTags; -- New
-DROP TABLE IF EXISTS Production_Assembly_Tracking; -- New
-DROP TABLE IF EXISTS Purchasing_Log; -- New
-DROP TABLE IF EXISTS LLM_Parsed_Data_Log; -- New
+DROP TABLE IF EXISTS document_notes; -- Added
+DROP TABLE IF EXISTS LaborLevels;
+DROP TABLE IF EXISTS TaskTags;
+DROP TABLE IF EXISTS Production_Assembly_Tracking;
+DROP TABLE IF EXISTS Purchasing_Log;
+DROP TABLE IF EXISTS LLM_Parsed_Data_Log;
 DROP TABLE IF EXISTS TimeEntries;
 DROP TABLE IF EXISTS ChangeOrderLineItems;
 DROP TABLE IF EXISTS ChangeOrders;
@@ -22,13 +24,13 @@ DROP TABLE IF EXISTS SalesOrderLineItems;
 DROP TABLE IF EXISTS SalesOrders;
 DROP TABLE IF EXISTS PurchaseOrderLineItems;
 DROP TABLE IF EXISTS PurchaseOrders;
-DROP TABLE IF EXISTS AssemblyComponents; -- Drop before Assemblies and Materials
-DROP TABLE IF EXISTS Assemblies;         -- Drop before Materials (if it had direct FKs, though not in this design)
+DROP TABLE IF EXISTS AssemblyComponents;
+DROP TABLE IF EXISTS Assemblies;
 DROP TABLE IF EXISTS Materials;
 DROP TABLE IF EXISTS Vendors;
 DROP TABLE IF EXISTS ToolAssignments;
 DROP TABLE IF EXISTS ResourceAssignments;
-DROP TABLE IF EXISTS TaskMaterialRequirements; -- Drop before Tasks, Assemblies, Materials
+DROP TABLE IF EXISTS TaskMaterialRequirements;
 DROP TABLE IF EXISTS Tasks;
 DROP TABLE IF EXISTS Tools;
 DROP TABLE IF EXISTS ToolTypes;
@@ -51,18 +53,18 @@ DROP TABLE IF EXISTS TaskStatuses;
 DROP TABLE IF EXISTS ToolStatuses;
 DROP TABLE IF EXISTS OrderStatuses;
 DROP TABLE IF EXISTS VendorTypes;
-DROP TABLE IF EXISTS raw_estimates; -- From App Core section
-DROP TABLE IF EXISTS processed_estimates; -- From App Core section
-DROP TABLE IF EXISTS wbs_elements; -- From App Core section
-DROP TABLE IF EXISTS project_budgets; -- From App Core section
-DROP TABLE IF EXISTS actual_costs; -- From App Core section
-DROP TABLE IF EXISTS progress_updates; -- From App Core section
+DROP TABLE IF EXISTS raw_estimates;
+DROP TABLE IF EXISTS processed_estimates;
+DROP TABLE IF EXISTS wbs_elements;
+DROP TABLE IF EXISTS project_budgets;
+DROP TABLE IF EXISTS actual_costs;
+DROP TABLE IF EXISTS progress_updates;
 DROP TABLE IF EXISTS DailyLogObservations;
 DROP TABLE IF EXISTS DailyLogMaterials;
 DROP TABLE IF EXISTS DailyLogTasks;
 DROP TABLE IF EXISTS DailyLogs;
-DROP TABLE IF EXISTS MaterialLog; -- From App Core section
-DROP TABLE IF EXISTS WBSElementResources; -- From App Core section
+DROP TABLE IF EXISTS MaterialLog;
+DROP TABLE IF EXISTS WBSElementResources;
 
 
 -- == Create Lookup Tables (Core Schema) ==
@@ -181,7 +183,7 @@ INSERT INTO TaskTags (Tag, Description) VALUES
 ('todo', 'To Do Item'),
 ('changes', 'Change Order Related');
 
--- == Create Core Tables ==
+-- == Create Core Data Tables (ERD Based) ==
 CREATE TABLE Vendors (
     VendorID INTEGER PRIMARY KEY AUTOINCREMENT,
     VendorName TEXT(255) NOT NULL UNIQUE,
@@ -237,7 +239,7 @@ CREATE INDEX IX_Materials_ManufacturerPartNumber ON Materials (ManufacturerPartN
 CREATE INDEX IX_Materials_Category ON Materials (Category);
 CREATE INDEX IX_Materials_SubCategory ON Materials (SubCategory);
 
-CREATE TABLE IF NOT EXISTS Assemblies (
+CREATE TABLE Assemblies (
     AssemblyID INTEGER PRIMARY KEY AUTOINCREMENT,
     AssemblyItemNumber TEXT UNIQUE NOT NULL,
     AssemblyName TEXT NOT NULL,
@@ -246,12 +248,12 @@ CREATE TABLE IF NOT EXISTS Assemblies (
     TotalEstMaterialCost REAL NULL,
     TotalEstLaborHours REAL NULL,
     DateCreated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    LastModifiedDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    LastModifiedDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP -- Standardized from UpdatedAt
 );
-CREATE INDEX IF NOT EXISTS IX_Assemblies_AssemblyItemNumber ON Assemblies (AssemblyItemNumber);
-CREATE INDEX IF NOT EXISTS IX_Assemblies_AssemblyName ON Assemblies (AssemblyName);
+CREATE INDEX IX_Assemblies_AssemblyItemNumber ON Assemblies (AssemblyItemNumber);
+CREATE INDEX IX_Assemblies_AssemblyName ON Assemblies (AssemblyName);
 
-CREATE TABLE IF NOT EXISTS AssemblyComponents (
+CREATE TABLE AssemblyComponents (
     AssemblyComponentID INTEGER PRIMARY KEY AUTOINCREMENT,
     AssemblyID INTEGER NOT NULL,
     MaterialStockNumber TEXT NOT NULL,
@@ -262,8 +264,8 @@ CREATE TABLE IF NOT EXISTS AssemblyComponents (
     FOREIGN KEY (AssemblyID) REFERENCES Assemblies(AssemblyID) ON DELETE CASCADE,
     FOREIGN KEY (MaterialStockNumber) REFERENCES Materials(StockNumber) ON DELETE RESTRICT
 );
-CREATE INDEX IF NOT EXISTS IX_AssemblyComponents_AssemblyID ON AssemblyComponents (AssemblyID);
-CREATE INDEX IF NOT EXISTS IX_AssemblyComponents_MaterialStockNumber ON AssemblyComponents (MaterialStockNumber);
+CREATE INDEX IX_AssemblyComponents_AssemblyID ON AssemblyComponents (AssemblyID);
+CREATE INDEX IX_AssemblyComponents_MaterialStockNumber ON AssemblyComponents (MaterialStockNumber);
 
 CREATE TABLE ToolTypes (
     ToolTypeID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -336,6 +338,20 @@ CREATE TABLE Employees (
     CONSTRAINT FK_Employees_AccessRoles FOREIGN KEY (AccessRoleID) REFERENCES AccessRoles(AccessRoleID)
 );
 CREATE INDEX IX_Employees_ReportsToEmployeeID ON Employees (ReportsToEmployeeID);
+
+-- User table for application login, potentially linked to an Employee record
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL,
+    EmployeeID INTEGER NULL, -- Link to the Employees table
+    FOREIGN KEY (EmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL
+        -- ON DELETE SET NULL: if an employee is deleted, the app user is not deleted but unlinked.
+        -- Consider ON DELETE CASCADE if app user should be deleted with employee.
+);
+CREATE INDEX IF NOT EXISTS IX_users_EmployeeID ON users (EmployeeID);
+
 
 CREATE TABLE CertificationTypes (
     CertificationTypeID INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT(150) NOT NULL UNIQUE, Description TEXT(500) NULL
@@ -439,7 +455,7 @@ CREATE TABLE SalesOrders (
     CONSTRAINT FK_SalesOrders_Customers FOREIGN KEY (CustomerID) REFERENCES Customers(CustomerID),
     CONSTRAINT FK_SalesOrders_Salesperson FOREIGN KEY (EmployeeID_Salesperson) REFERENCES Employees(EmployeeID),
     CONSTRAINT FK_SalesOrders_OrderStatuses FOREIGN KEY (OrderStatusID) REFERENCES OrderStatuses(OrderStatusID),
-    CONSTRAINT FK_SalesOrders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) -- Added
+    CONSTRAINT FK_SalesOrders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID)
 );
 CREATE INDEX IX_SalesOrders_CustomerID ON SalesOrders (CustomerID);
 CREATE INDEX IX_SalesOrders_ProjectID ON SalesOrders (ProjectID);
@@ -464,7 +480,7 @@ CREATE TABLE EstimateHeaders (
     LastModifiedDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT FK_EstimateHeaders_Customers FOREIGN KEY (CustomerID) REFERENCES Customers(CustomerID),
     CONSTRAINT FK_EstimateHeaders_Estimator FOREIGN KEY (EmployeeID_Estimator) REFERENCES Employees(EmployeeID),
-    CONSTRAINT FK_EstimateHeaders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) -- Added
+    CONSTRAINT FK_EstimateHeaders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID)
 );
 CREATE INDEX IX_EstimateHeaders_ProjectID ON EstimateHeaders (ProjectID);
 CREATE INDEX IX_EstimateHeaders_CustomerID ON EstimateHeaders (CustomerID);
@@ -494,7 +510,7 @@ CREATE TABLE PurchaseOrders (
     CONSTRAINT FK_PurchaseOrders_Requester FOREIGN KEY (EmployeeID_Requester) REFERENCES Employees(EmployeeID),
     CONSTRAINT FK_PurchaseOrders_Approver FOREIGN KEY (EmployeeID_Approver) REFERENCES Employees(EmployeeID),
     CONSTRAINT FK_PurchaseOrders_OrderStatuses FOREIGN KEY (OrderStatusID) REFERENCES OrderStatuses(OrderStatusID),
-    CONSTRAINT FK_PurchaseOrders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) -- Added
+    CONSTRAINT FK_PurchaseOrders_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID)
 );
 CREATE INDEX IX_PurchaseOrders_VendorID ON PurchaseOrders (VendorID);
 CREATE INDEX IX_PurchaseOrders_ProjectID ON PurchaseOrders (ProjectID);
@@ -511,7 +527,7 @@ CREATE TABLE PurchaseOrderLineItems (
 );
 CREATE INDEX IX_PurchaseOrderLineItems_MaterialID ON PurchaseOrderLineItems (MaterialID);
 
--- == Create Projects Tables ==
+-- == Create Project Management Core Tables ==
 CREATE TABLE Projects (
     ProjectID INTEGER PRIMARY KEY AUTOINCREMENT, ProjectName TEXT(255) NOT NULL, CustomerID INT NOT NULL,
     ProjectNumber TEXT(100) NULL UNIQUE, Location_Street TEXT(255) NULL, Location_City TEXT(100) NULL,
@@ -535,20 +551,22 @@ CREATE INDEX IX_Projects_ProjectManagerEmployeeID ON Projects (ProjectManagerEmp
 CREATE INDEX IX_Projects_ForemanEmployeeID ON Projects (ForemanEmployeeID);
 
 CREATE TABLE Tasks (
-    TaskID INTEGER PRIMARY KEY AUTOINCREMENT, ProjectID INT NOT NULL, WBSElementID INT NULL, TaskType TEXT(100) NOT NULL, Description TEXT NOT NULL,
+    TaskID INTEGER PRIMARY KEY AUTOINCREMENT, ProjectID INT NOT NULL, WBSElementID INT NULL,
+    TaskName TEXT NULL, -- Added TaskName for better identification
+    TaskType TEXT(100) NOT NULL, Description TEXT NOT NULL,
     Phase TEXT NULL, ScheduledStartDate TEXT NULL, ScheduledEndDate TEXT NULL, ActualStartDate TEXT NULL, ActualEndDate TEXT NULL,
     EstimatedHours REAL NULL, ActualHours REAL NULL, PercentComplete REAL NULL DEFAULT 0.0, TaskStatusID INT NULL,
     Priority INT NULL, LeadEmployeeID INT NULL, CreatedByEmployeeID INT NULL, PredecessorTaskID INT NULL, Notes TEXT NULL,
     DateCreated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, LastModifiedDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT FK_Tasks_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) ON DELETE CASCADE,
-    CONSTRAINT FK_Tasks_WBSElements FOREIGN KEY (WBSElementID) REFERENCES wbs_elements(WBSElementID) ON DELETE SET NULL, -- Added FK to wbs_elements
+    CONSTRAINT FK_Tasks_WBSElements FOREIGN KEY (WBSElementID) REFERENCES wbs_elements(WBSElementID) ON DELETE SET NULL,
     CONSTRAINT FK_Tasks_CreatedByEmployee FOREIGN KEY (CreatedByEmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL,
     CONSTRAINT FK_Tasks_LeadEmployee FOREIGN KEY (LeadEmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL,
     CONSTRAINT FK_Tasks_TaskStatuses FOREIGN KEY (TaskStatusID) REFERENCES TaskStatuses(TaskStatusID),
     CONSTRAINT FK_Tasks_PredecessorTask FOREIGN KEY (PredecessorTaskID) REFERENCES Tasks(TaskID) ON DELETE SET NULL
 );
 CREATE INDEX IX_Tasks_ProjectID ON Tasks (ProjectID);
-CREATE INDEX IX_Tasks_WBSElementID ON Tasks (WBSElementID); -- Added index
+CREATE INDEX IX_Tasks_WBSElementID ON Tasks (WBSElementID);
 CREATE INDEX IX_Tasks_TaskStatusID ON Tasks (TaskStatusID);
 CREATE INDEX IX_Tasks_PredecessorTaskID ON Tasks (PredecessorTaskID);
 CREATE INDEX IX_Tasks_LeadEmployeeID ON Tasks (LeadEmployeeID);
@@ -645,17 +663,10 @@ CREATE INDEX IX_TimeEntries_Employee_Date ON TimeEntries (EmployeeID, EntryDate)
 CREATE INDEX IX_TimeEntries_Project_Date ON TimeEntries (ProjectID, EntryDate);
 CREATE INDEX IX_TimeEntries_TaskID ON TimeEntries (TaskID);
 
--- ========================================================================== --
---                           SCRIPT COMPLETE                                  --
--- ========================================================================== --
-
 -- == Application Core Tables (as per README) ==
 -- These tables support the primary workflow of the application modules.
--- Note: Some of these tables (Projects, Tasks, Materials, Vendors) are already defined above
--- in the "Davis Electric ERD" section with more detail.
--- The definitions below are simpler and might be from an earlier version or for specific app logic.
--- This duplication needs to be resolved. For now, assuming the more detailed ERD versions are primary.
--- The `IF NOT EXISTS` clause will prevent errors if they are already created.
+-- Redundant definitions for Projects, Tasks, Materials, Vendors were removed.
+-- The definitions below are for tables not covered by the main ERD or specific app needs.
 
 -- Raw Estimates (Data ingested from CSV/Excel)
 CREATE TABLE IF NOT EXISTS raw_estimates (
@@ -693,7 +704,7 @@ CREATE INDEX IF NOT EXISTS IX_WBSElements_ParentWBSElementID ON wbs_elements (Pa
 CREATE TABLE IF NOT EXISTS project_budgets (
     BudgetID INTEGER PRIMARY KEY AUTOINCREMENT, ProjectID INT NOT NULL, WBSElementID INT NULL,
     BudgetType TEXT NOT NULL, Amount REAL NOT NULL, Notes TEXT NULL,
-    LastUpdated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    LastUpdated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Standardized
     CONSTRAINT FK_ProjectBudgets_Projects FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) ON DELETE CASCADE,
     CONSTRAINT FK_ProjectBudgets_WBSElements FOREIGN KEY (WBSElementID) REFERENCES wbs_elements(WBSElementID) ON DELETE CASCADE
 );
@@ -734,28 +745,28 @@ CREATE INDEX IF NOT EXISTS IX_ProgressUpdates_TaskID ON progress_updates (TaskID
 CREATE TABLE IF NOT EXISTS MaterialLog (
     MaterialLogID INTEGER PRIMARY KEY AUTOINCREMENT,
     ProjectID INTEGER NOT NULL,
-    MaterialStockNumber TEXT NOT NULL, -- Added, for direct reference and consistency
-    TaskID INTEGER NULL,               -- Added
+    MaterialStockNumber TEXT NOT NULL,
+    TaskID INTEGER NULL,
     WBSElementID INTEGER NULL,
-    QuantityUsed REAL NOT NULL,        -- Renamed from Quantity for clarity
+    QuantityUsed REAL NOT NULL,
     Unit TEXT NULL,
     CostCode TEXT NULL,
     Supplier TEXT NULL,
-    TransactionDate TEXT NOT NULL,     -- Was LogDate, renamed for consistency
+    TransactionDate TEXT NOT NULL,
     RecordedByEmployeeID INTEGER NULL,
-    Notes TEXT NULL,                   -- Added
-    MaterialSystemID INTEGER NOT NULL, -- Added
+    Notes TEXT NULL,
+    MaterialSystemID INTEGER NOT NULL,
     FOREIGN KEY (ProjectID) REFERENCES Projects(ProjectID) ON DELETE CASCADE,
-    FOREIGN KEY (MaterialSystemID) REFERENCES Materials(MaterialSystemID) ON DELETE RESTRICT, -- Added FK
-    FOREIGN KEY (TaskID) REFERENCES Tasks(TaskID) ON DELETE SET NULL,                         -- Added FK
+    FOREIGN KEY (MaterialSystemID) REFERENCES Materials(MaterialSystemID) ON DELETE RESTRICT,
+    FOREIGN KEY (TaskID) REFERENCES Tasks(TaskID) ON DELETE SET NULL,
     FOREIGN KEY (WBSElementID) REFERENCES wbs_elements(WBSElementID) ON DELETE SET NULL,
     FOREIGN KEY (RecordedByEmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS IX_MaterialLog_ProjectID ON MaterialLog (ProjectID);
-CREATE INDEX IF NOT EXISTS IX_MaterialLog_MaterialStockNumber ON MaterialLog (MaterialStockNumber); -- Changed from MaterialName
-CREATE INDEX IF NOT EXISTS IX_MaterialLog_TaskID ON MaterialLog (TaskID);                           -- Added
+CREATE INDEX IF NOT EXISTS IX_MaterialLog_MaterialStockNumber ON MaterialLog (MaterialStockNumber);
+CREATE INDEX IF NOT EXISTS IX_MaterialLog_TaskID ON MaterialLog (TaskID);
 CREATE INDEX IF NOT EXISTS IX_MaterialLog_WBSElementID ON MaterialLog (WBSElementID);
-CREATE INDEX IF NOT EXISTS IX_MaterialLog_MaterialSystemID ON MaterialLog (MaterialSystemID);       -- Added
+CREATE INDEX IF NOT EXISTS IX_MaterialLog_MaterialSystemID ON MaterialLog (MaterialSystemID);
 
 -- Daily Log Tables (for Journeyman Daily Log Integration)
 CREATE TABLE IF NOT EXISTS DailyLogs (
@@ -812,8 +823,8 @@ CREATE INDEX IF NOT EXISTS IX_DailyLogObservations_DailyLogID ON DailyLogObserva
 CREATE TABLE IF NOT EXISTS WBSElementResources (
     WBSElementResourceID INTEGER PRIMARY KEY AUTOINCREMENT,
     WBSElementID INTEGER NOT NULL,
-    ResourceDescription TEXT NOT NULL, -- e.g., from estimate item description
-    ResourceType TEXT,                 -- e.g., 'Material', 'Labor', 'Equipment', 'Subcontractor'
+    ResourceDescription TEXT NOT NULL,
+    ResourceType TEXT,
     Quantity REAL,
     UnitOfMeasure TEXT,
     UnitCost REAL,
@@ -827,41 +838,39 @@ CREATE INDEX IF NOT EXISTS IX_WBSElementResources_WBSElementID ON WBSElementReso
 
 -- End of Application Core Tables --
 
--- == New Tables for LLM Parsing, Purchasing Log, and Production Tracking ==
+-- == New Tables for LLM Parsing, Purchasing Log, Production Tracking, and Document Notes ==
 
 -- LLM_Parsed_Data_Log Table
-CREATE TABLE LLM_Parsed_Data_Log (
+CREATE TABLE IF NOT EXISTS LLM_Parsed_Data_Log ( -- Ensured IF NOT EXISTS
     ParsedDataID INTEGER PRIMARY KEY AUTOINCREMENT,
-    SourceModule TEXT NOT NULL, -- e.g., 'DailyLog', 'MaterialRequest', 'SiteObservation'
-    SourceRecordID INTEGER NULL, -- ID of the record in the original table, if applicable
-    OriginalInput TEXT NOT NULL, -- The raw text input the LLM processed
-    ParsedJSON TEXT NOT NULL, -- JSON string of the structured data extracted by the LLM
-    ConfidenceScore REAL NULL, -- LLM's confidence in parsing, if available
+    SourceModule TEXT NOT NULL,
+    SourceRecordID INTEGER NULL,
+    OriginalInput TEXT NOT NULL,
+    ParsedJSON TEXT NOT NULL,
+    ConfidenceScore REAL NULL,
     ParsingTimestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ReviewStatus TEXT NOT NULL DEFAULT 'Pending Review', -- e.g., 'Pending Review', 'Approved', 'Rejected', 'Corrected'
+    ReviewStatus TEXT NOT NULL DEFAULT 'Pending Review',
     ReviewedByEmployeeID INTEGER NULL,
     ReviewDate TEXT NULL,
     Notes TEXT NULL,
     FOREIGN KEY (ReviewedByEmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL,
-    -- Potential FK to other tables based on SourceModule and SourceRecordID would require dynamic handling or separate linking tables.
-    -- For now, SourceRecordID is informational.
     CHECK (ReviewStatus IN ('Pending Review', 'Approved', 'Rejected', 'Corrected'))
 );
-CREATE INDEX IX_LLM_Parsed_Data_Log_SourceModule_RecordID ON LLM_Parsed_Data_Log (SourceModule, SourceRecordID);
-CREATE INDEX IX_LLM_Parsed_Data_Log_ReviewStatus ON LLM_Parsed_Data_Log (ReviewStatus);
-CREATE INDEX IX_LLM_Parsed_Data_Log_ParsingTimestamp ON LLM_Parsed_Data_Log (ParsingTimestamp);
+CREATE INDEX IF NOT EXISTS IX_LLM_Parsed_Data_Log_SourceModule_RecordID ON LLM_Parsed_Data_Log (SourceModule, SourceRecordID);
+CREATE INDEX IF NOT EXISTS IX_LLM_Parsed_Data_Log_ReviewStatus ON LLM_Parsed_Data_Log (ReviewStatus);
+CREATE INDEX IF NOT EXISTS IX_LLM_Parsed_Data_Log_ParsingTimestamp ON LLM_Parsed_Data_Log (ParsingTimestamp);
 
 -- Purchasing_Log Table
-CREATE TABLE Purchasing_Log (
+CREATE TABLE IF NOT EXISTS Purchasing_Log ( -- Ensured IF NOT EXISTS
     InternalLogID INTEGER PRIMARY KEY AUTOINCREMENT,
     ProjectID INTEGER NULL,
     RequestedByEmployeeID INTEGER NOT NULL,
     MaterialDescription TEXT NOT NULL,
     QuantityRequested REAL NOT NULL,
     UnitOfMeasure TEXT NULL,
-    UrgencyLevel TEXT NULL, -- e.g., 'Standard', 'Urgent', 'Critical'
-    RequiredByDate TEXT NULL, -- YYYY-MM-DD
-    Status TEXT NOT NULL DEFAULT 'Requested', -- e.g., 'Requested', 'Approved by PM', 'PO Issued', 'Received Partial', 'Received Full', 'Cancelled'
+    UrgencyLevel TEXT NULL,
+    RequiredByDate TEXT NULL,
+    Status TEXT NOT NULL DEFAULT 'Requested',
     AssociatedPOLineItemID INTEGER NULL,
     Notes TEXT NULL,
     DateCreated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -872,21 +881,21 @@ CREATE TABLE Purchasing_Log (
     CHECK (UrgencyLevel IN ('Standard', 'Urgent', 'Critical') OR UrgencyLevel IS NULL),
     CHECK (Status IN ('Requested', 'Approved by PM', 'PO Issued', 'Received Partial', 'Received Full', 'Cancelled'))
 );
-CREATE INDEX IX_Purchasing_Log_ProjectID ON Purchasing_Log (ProjectID);
-CREATE INDEX IX_Purchasing_Log_RequestedByEmployeeID ON Purchasing_Log (RequestedByEmployeeID);
-CREATE INDEX IX_Purchasing_Log_Status ON Purchasing_Log (Status);
-CREATE INDEX IX_Purchasing_Log_RequiredByDate ON Purchasing_Log (RequiredByDate);
+CREATE INDEX IF NOT EXISTS IX_Purchasing_Log_ProjectID ON Purchasing_Log (ProjectID);
+CREATE INDEX IF NOT EXISTS IX_Purchasing_Log_RequestedByEmployeeID ON Purchasing_Log (RequestedByEmployeeID);
+CREATE INDEX IF NOT EXISTS IX_Purchasing_Log_Status ON Purchasing_Log (Status);
+CREATE INDEX IF NOT EXISTS IX_Purchasing_Log_RequiredByDate ON Purchasing_Log (RequiredByDate);
 
 -- Production_Assembly_Tracking Table
-CREATE TABLE Production_Assembly_Tracking (
+CREATE TABLE IF NOT EXISTS Production_Assembly_Tracking ( -- Ensured IF NOT EXISTS
     ProductionID INTEGER PRIMARY KEY AUTOINCREMENT,
     AssemblyID INTEGER NOT NULL,
     ProjectID INTEGER NULL,
     QuantityToProduce REAL NOT NULL,
-    Status TEXT NOT NULL DEFAULT 'Planned', -- e.g., 'Planned', 'In Progress', 'On Hold', 'Completed', 'QC Passed', 'Shipped'
-    StartDate TEXT NULL, -- YYYY-MM-DD
-    CompletionDate TEXT NULL, -- YYYY-MM-DD
-    AssignedToEmployeeID INTEGER NULL, -- Foreman/Lead of production
+    Status TEXT NOT NULL DEFAULT 'Planned',
+    StartDate TEXT NULL,
+    CompletionDate TEXT NULL,
+    AssignedToEmployeeID INTEGER NULL,
     Notes TEXT NULL,
     DateCreated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     LastModifiedDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -895,9 +904,23 @@ CREATE TABLE Production_Assembly_Tracking (
     FOREIGN KEY (AssignedToEmployeeID) REFERENCES Employees(EmployeeID) ON DELETE SET NULL,
     CHECK (Status IN ('Planned', 'In Progress', 'On Hold', 'Completed', 'QC Passed', 'Shipped'))
 );
-CREATE INDEX IX_Production_Assembly_Tracking_AssemblyID ON Production_Assembly_Tracking (AssemblyID);
-CREATE INDEX IX_Production_Assembly_Tracking_ProjectID ON Production_Assembly_Tracking (ProjectID);
-CREATE INDEX IX_Production_Assembly_Tracking_Status ON Production_Assembly_Tracking (Status);
-CREATE INDEX IX_Production_Assembly_Tracking_AssignedToEmployeeID ON Production_Assembly_Tracking (AssignedToEmployeeID);
+CREATE INDEX IF NOT EXISTS IX_Production_Assembly_Tracking_AssemblyID ON Production_Assembly_Tracking (AssemblyID);
+CREATE INDEX IF NOT EXISTS IX_Production_Assembly_Tracking_ProjectID ON Production_Assembly_Tracking (ProjectID);
+CREATE INDEX IF NOT EXISTS IX_Production_Assembly_Tracking_Status ON Production_Assembly_Tracking (Status);
+CREATE INDEX IF NOT EXISTS IX_Production_Assembly_Tracking_AssignedToEmployeeID ON Production_Assembly_Tracking (AssignedToEmployeeID);
+
+-- Document Notes Table (Added)
+CREATE TABLE IF NOT EXISTS document_notes (
+    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL, -- Corresponds to ProjectDocuments.ProjectDocumentID
+    page_number INTEGER,
+    employee_id INTEGER,          -- Corresponds to Employees.EmployeeID
+    note_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES ProjectDocuments(ProjectDocumentID) ON DELETE CASCADE,
+    FOREIGN KEY (employee_id) REFERENCES Employees(EmployeeID) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS IX_document_notes_document_id ON document_notes (document_id);
+CREATE INDEX IF NOT EXISTS IX_document_notes_employee_id ON document_notes (employee_id);
 
 -- Database Schema Creation Script Completed Successfully!

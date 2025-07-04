@@ -221,6 +221,28 @@ class Integration:
 
         return pd.DataFrame([dict(row) for row in rows])
 
+    # --- QuickBooks Integration Placeholders ---
+    def connect_quickbooks(self):
+        logger.info("connect_quickbooks called (Not Implemented)")
+        return False, "QuickBooks connection is not implemented."
+
+    def disconnect_quickbooks(self):
+        logger.info("disconnect_quickbooks called (Not Implemented)")
+        return False, "QuickBooks disconnection is not implemented."
+
+    def is_quickbooks_connected(self):
+        logger.info("is_quickbooks_connected called (Not Implemented)")
+        # Returns a tuple: (is_connected_bool, status_message_str)
+        return False, "Not Implemented"
+
+    def fetch_quickbooks_sov(self, qb_project_id_external):
+        logger.info(f"fetch_quickbooks_sov called for QB Project ID: {qb_project_id_external} (Not Implemented)")
+        return False, "Fetching SOV from QuickBooks is not implemented." # Or (True, []) if you want to simulate empty success
+
+    def link_quickbooks_sov_to_internal(self, internal_project_id, sov_data):
+        logger.info(f"link_quickbooks_sov_to_internal called for Internal PID: {internal_project_id} (Not Implemented)")
+        return False, "Linking SOV to internal project is not implemented."
+
     def get_processed_estimates(self):
         query = "SELECT ProcessedEstimateID, ProjectID, RawEstimateID, CostCode, Description, Quantity, Unit, UnitCost, TotalCost, Phase, ProcessedDate FROM processed_estimates"
         rows = self.db_manager.execute_query(query, fetch_all=True)
