@@ -18,6 +18,7 @@ from configuration import Config
 from database_manager import db_manager
 from user_management import UserManagement
 from plugins.plugin_registry import PluginRegistry
+import constants # Added
 from tkPDFViewer import tkPDFViewer
 
 # Import GUI Frames
@@ -196,6 +197,22 @@ class ProjectManagementApp(tk.Tk):
         self._initialize_modules()
         self.create_login_window()
         self.create_main_layout()
+        self.protocol("WM_DELETE_WINDOW", self.on_app_closing) # Graceful shutdown
+
+    def on_app_closing(self):
+        logger.info("Application is closing.")
+        # Ensure db_manager and its connection are valid before trying to close
+        if 'db_manager' in globals() and db_manager and hasattr(db_manager, 'conn') and db_manager.conn is not None:
+            try:
+                logger.info("Attempting to close database connection.")
+                db_manager.close_connection()
+                logger.info("Database connection closed via on_app_closing.")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {e}", exc_info=True)
+        else:
+            logger.info("Database manager or connection not available/valid for closing.")
+        self.destroy()
+
 
     def _setup_styles(self):
         self.colors = {
@@ -318,19 +335,19 @@ class ProjectManagementApp(tk.Tk):
         )
 
         self.modules = {
-            'integration': integration_module,
-            'data_processing': data_processing_module,
-            'project_startup': project_startup_module,
-            'execution_management': execution_management_module,
-            'monitoring_control': monitoring_control_module,
-            'reporting': reporting_module,
-            'closeout': closeout_module,
-            'user_management': self.user_manager,
-            'configuration': Config
+            constants.MODULE_INTEGRATION: integration_module,
+            constants.MODULE_DATA_PROCESSING: data_processing_module,
+            constants.MODULE_PROJECT_STARTUP: project_startup_module,
+            constants.MODULE_EXECUTION_MANAGEMENT: execution_management_module,
+            constants.MODULE_MONITORING_CONTROL: monitoring_control_module,
+            constants.MODULE_REPORTING: reporting_module,
+            constants.MODULE_CLOSEOUT: closeout_module,
+            constants.MODULE_USER_MANAGEMENT: self.user_manager,
+            constants.MODULE_CONFIGURATION: Config
         }
 
         for name, instance in self.modules.items():
-            if name != 'configuration':
+            if name != constants.MODULE_CONFIGURATION: # Check against constant
                 PluginRegistry.register_module(name, instance)
         logger.info("All core modules instantiated and registered.")
 
@@ -381,7 +398,7 @@ class ProjectManagementApp(tk.Tk):
             )
         self.update_active_project_display()
         self.populate_navigation_menu()
-        self.show_module_frame('project_startup', ProjectStartupModuleFrame)
+        self.show_module_frame(constants.FRAME_PROJECT_STARTUP, ProjectStartupModuleFrame)
 
     def update_active_project_display(self):
         """Updates the active project label in the top frame."""
@@ -440,16 +457,16 @@ class ProjectManagementApp(tk.Tk):
             widget.destroy()
 
         module_buttons_data = [
-            ('Integration & Data Proc.', 'integration_data_processing', IntegrationDataProcessingModuleFrame),
-            ('Project Startup', 'project_startup', ProjectStartupModuleFrame),
-            ('Execution Management', 'execution_management', ExecutionManagementModuleFrame),
-            ('Monitoring & Control', 'monitoring_control', MonitoringControlModuleFrame),
-            ('Reporting & Closeout', 'reporting_closeout', ReportingCloseoutModuleFrame),
-            ('Project Scheduling', 'project_scheduling', SchedulingModuleFrame),
-            ('Daily Log', 'daily_log', DailyLogModuleFrame),
-            ('Purchasing & Logistics', 'purchasing_logistics', PurchasingLogisticsModuleFrame),
-            ('Production & Prefab', 'production_prefab', ProductionPrefabModuleFrame),
-            ('User Management', 'user_management', UserManagementModuleFrame),
+            ('Integration & Data Proc.', constants.FRAME_IDP, IntegrationDataProcessingModuleFrame),
+            ('Project Startup', constants.FRAME_PROJECT_STARTUP, ProjectStartupModuleFrame),
+            ('Execution Management', constants.FRAME_EXEC_MGMT, ExecutionManagementModuleFrame),
+            ('Monitoring & Control', constants.FRAME_MON_CTRL, MonitoringControlModuleFrame),
+            ('Reporting & Closeout', constants.FRAME_REP_CLOSE, ReportingCloseoutModuleFrame),
+            ('Project Scheduling', constants.FRAME_SCHEDULING, SchedulingModuleFrame),
+            ('Daily Log', constants.FRAME_DAILY_LOG, DailyLogModuleFrame),
+            ('Purchasing & Logistics', constants.FRAME_PURCH_LOGISTICS, PurchasingLogisticsModuleFrame),
+            ('Production & Prefab', constants.FRAME_PROD_PREFAB, ProductionPrefabModuleFrame),
+            ('User Management', constants.FRAME_USER_MGMT, UserManagementModuleFrame),
         ]
 
         for text, module_name, frame_class in module_buttons_data:
@@ -470,20 +487,45 @@ class ProjectManagementApp(tk.Tk):
 
         if module_name not in self.module_frames:
             if frame_class:
-                module_instance_to_pass = self.modules.get(module_name)
-                if module_name in ['purchasing_logistics', 'production_prefab']:
-                    module_instance_to_pass = self.modules.get('project_startup')
+                actual_backend_module_key = None
+                # Map FRAME constants to MODULE constants for fetching the backend instance
+                if module_name == constants.FRAME_IDP:
+                    actual_backend_module_key = constants.MODULE_INTEGRATION # Primary module for this combined frame
+                elif module_name == constants.FRAME_PROJECT_STARTUP:
+                    actual_backend_module_key = constants.MODULE_PROJECT_STARTUP
+                elif module_name == constants.FRAME_EXEC_MGMT:
+                    actual_backend_module_key = constants.MODULE_EXECUTION_MANAGEMENT
+                elif module_name == constants.FRAME_MON_CTRL:
+                    actual_backend_module_key = constants.MODULE_MONITORING_CONTROL
+                elif module_name == constants.FRAME_REP_CLOSE:
+                    actual_backend_module_key = constants.MODULE_REPORTING # Primary module for this combined frame
+                elif module_name == constants.FRAME_USER_MGMT:
+                    actual_backend_module_key = constants.MODULE_USER_MANAGEMENT
+                # For FRAME_SCHEDULING, FRAME_DAILY_LOG, actual_backend_module_key remains None
+                # if they don't have a direct primary backend module in self.modules.
+                # Their frames must handle module_instance_to_pass being None.
+
+                module_instance_to_pass = self.modules.get(actual_backend_module_key) if actual_backend_module_key else None
+
+                # Special handling for frames that use a different module than their name might suggest
+                if module_name in [constants.FRAME_PURCH_LOGISTICS, constants.FRAME_PROD_PREFAB]:
+                    module_instance_to_pass = self.modules.get(constants.MODULE_PROJECT_STARTUP)
                     if not module_instance_to_pass:
                         logger.error(
-                            f"ProjectStartup module instance not found for {module_name}. "
+                            f"{constants.MODULE_PROJECT_STARTUP} module instance not found for {module_name}. "
                             "Cannot initialize frame."
                         )
                         messagebox.showerror(
                             "Initialization Error",
-                            f"Backend for {module_name} is not available.",
+                            f"Backend for {module_name} (via {constants.MODULE_PROJECT_STARTUP}) is not available.",
                             parent=self
                         )
                         return
+
+                # If after all logic, module_instance_to_pass is still None for a frame that expects one,
+                # it's an issue, but the frame's __init__ should be robust or this logic refined.
+                # For example, if FRAME_IDP absolutely needs data_processing too, its __init__ could fetch it from self.app.modules.
+
                 self.module_frames[module_name] = frame_class(
                     self.editor_area, self, module_instance_to_pass
                 )
@@ -494,7 +536,8 @@ class ProjectManagementApp(tk.Tk):
         self.module_frames[module_name].pack(fill="both", expand=True)
         logger.info(f"Displayed {module_name} module frame.")
 
-        if module_name == 'project_startup' or module_name == 'integration_data_processing':
+        # Use constants for checking which sidebar to show
+        if module_name == constants.FRAME_PROJECT_STARTUP or module_name == constants.FRAME_IDP:
             self.show_project_list_in_sidebar()
         else:
             self.hide_project_list_in_sidebar()
@@ -573,16 +616,6 @@ class ProjectManagementApp(tk.Tk):
                 "Could not load projects. Backend functionality missing.",
                 parent=self
             )
-
-    def show_project_list_in_sidebar_OLD(self): # Original method renamed for safety
-        # This method is kept for reference but is not actively used.
-        # The new show_project_list_in_sidebar is the active one.
-        pass
-
-    def load_project_list(self): # Original method, likely for the OLD sidebar
-        # This method is kept for reference but is not actively used.
-        pass
-
 
 if __name__ == "__main__":
     for directory in [Config.DATABASE_DIR, Config.DATA_DIR, Config.REPORTS_DIR, Config.ARCHIVE_DIR, Config.LOGS_DIR]:

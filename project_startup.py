@@ -4,6 +4,8 @@ import uuid # For generating unique project IDs if needed, otherwise use auto-in
 from datetime import datetime # Added for document notes timestamp
 from database_manager import db_manager # Import the singleton database manager
 from configuration import Config
+from exceptions import AppValidationError, AppOperationConflictError, AppDatabaseError
+import constants
 
 # Set up logging for the Project Startup Module
 # BasicConfig is now handled in main.py for the application.
@@ -25,77 +27,6 @@ class ProjectStartup:
         # self._initialize_db_tables() # This is now handled by DatabaseManager executing schema.sql
         logger.info("Project Startup module initialized with provided db_manager.")
 
-    # def _initialize_db_tables(self): # TODO: Reconcile with main schema.sql
-    #     """
-    #     Ensures the 'projects', 'wbs_elements', 'project_budgets', and
-    #     'resource_allocations' tables exist in the database.
-    #     Adds ON DELETE clauses for better data integrity.
-    #     This method is commented out as table creation is now primarily handled
-    #     by the main schema.sql executed by the DatabaseManager.
-    #     Keeping it here temporarily for reference during refactoring if needed.
-    #     """
-    #     queries = [
-    #         """
-    #         CREATE TABLE IF NOT EXISTS projects (
-    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #             project_name TEXT NOT NULL UNIQUE,
-    #             start_date TEXT,
-    #             end_date TEXT,
-    #             status TEXT DEFAULT 'Planning', /* e.g., Planning, Execution, Closed, On Hold */
-    #             total_estimated_cost REAL DEFAULT 0.0,
-    #             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    #         )
-    #         """,
-    #         """
-    #         CREATE TABLE IF NOT EXISTS wbs_elements (
-    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #             project_id INTEGER NOT NULL,
-    #             wbs_code TEXT NOT NULL, /* e.g., 1.1, 1.1.1 */
-    #             description TEXT NOT NULL,
-    #             parent_id INTEGER,
-    #             processed_estimate_id INTEGER, /* Optional: if WBS directly from one estimate line */
-    #             estimated_cost REAL DEFAULT 0.0,
-    #             status TEXT DEFAULT 'Planned',
-    #             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    #             FOREIGN KEY (processed_estimate_id) REFERENCES processed_estimates(id) ON DELETE SET NULL,
-    #             FOREIGN KEY (parent_id) REFERENCES wbs_elements(id) ON DELETE CASCADE
-    #         )
-    #         """,
-    #         """
-    #         CREATE TABLE IF NOT EXISTS project_budgets (
-    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #             project_id INTEGER NOT NULL,
-    #             wbs_element_id INTEGER,
-    #             budget_category TEXT, /* e.g., Labor, Materials, Subcontractor, Phase Name */
-    #             estimated_amount REAL NOT NULL DEFAULT 0.0,
-    #             allocated_amount REAL DEFAULT 0.0, /* Could be actuals or committed costs */
-    #             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    #             FOREIGN KEY (wbs_element_id) REFERENCES wbs_elements(id) ON DELETE SET NULL
-    #         )
-    #         """,
-    #         """
-    #         CREATE TABLE IF NOT EXISTS resource_allocations (
-    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #             project_id INTEGER NOT NULL,
-    #             wbs_element_id INTEGER NOT NULL,
-    #             resource_name TEXT NOT NULL,
-    #             resource_type TEXT, -- e.g., 'Labor', 'Material', 'Equipment'
-    #             allocated_quantity REAL NOT NULL,
-    #             unit TEXT,
-    #             allocated_cost REAL,
-    #             FOREIGN KEY (project_id) REFERENCES projects(id),
-    #             FOREIGN KEY (wbs_element_id) REFERENCES wbs_elements(id)
-    #         )
-    #         """
-    #     ]
-
-    #     for query in queries:
-    #         success = self.db_manager.execute_query(query, commit=True)
-    #         if not success:
-    #             logger.error(f"Failed to create database table with query: {query.split('TABLE IF NOT EXISTS ')[1].split(' ')[0]} (Error)")
-    #         else:
-    #             logger.info(f"Database table ensured: {query.split('TABLE IF NOT EXISTS ')[1].split(' ')[0]}")
-
     def _get_processed_estimates_df(self):
         """
         Retrieves processed estimate data from the database into a pandas DataFrame.
@@ -106,40 +37,6 @@ class ProjectStartup:
             data = [dict(row) for row in rows]
             return pd.DataFrame(data)
         return pd.DataFrame()
-
-    def _link_unassigned_estimates_to_project(self, project_id):
-        """
-        Links processed estimates with no current project_id to the specified project_id.
-        Returns:
-            tuple: (bool success, str message, int num_linked)
-        """
-        if not project_id:
-            return False, "Project ID not provided for linking.", 0
-
-        # Check how many are unlinked first (optional, for logging)
-        # Use schema casing: ProjectID
-        query_count_unlinked = "SELECT COUNT(*) FROM processed_estimates WHERE ProjectID IS NULL"
-        count_result = self.db_manager.execute_query(query_count_unlinked, fetch_one=True)
-        num_unlinked_before = count_result[0] if count_result else 0
-
-        if num_unlinked_before == 0:
-            logger.info(f"No unassigned processed estimates (ProjectID IS NULL) found to link for project {project_id}.")
-            return True, "No unassigned processed estimates found to link.", 0
-
-        # Use schema casing: ProjectID
-        update_query = "UPDATE processed_estimates SET ProjectID = ? WHERE ProjectID IS NULL"
-        success = self.db_manager.execute_query(update_query, params=(project_id,), commit=True)
-
-        if success:
-            # Verify how many rows were actually updated.
-            # cursor.rowcount is not directly available via db_manager.execute_query
-            # For simplicity, we'll assume if success, it worked on num_unlinked_before.
-            # A more robust way would be to query again.
-            logger.info(f"Successfully linked {num_unlinked_before} unassigned processed estimates to project ID {project_id}.")
-            return True, f"Successfully linked {num_unlinked_before} unassigned estimates to project {project_id}.", num_unlinked_before
-        else:
-            logger.error(f"Database error linking estimates to project {project_id}.")
-            return False, "Database error during linking estimates (see logs).", 0
 
     def _get_processed_estimates_for_project_df(self, project_id):
         """
@@ -165,6 +62,32 @@ class ProjectStartup:
         Returns the project_id if successful, None otherwise.
         Uses the 'Projects' table structure from schema.sql.
         """
+        if not project_name or not isinstance(project_name, str):
+            # This validation now typically happens before, or an exception is raised.
+            # For robustness, keeping it, but it should ideally not be hit if called from validated GUI.
+            logger.error("Project creation failed: Project name must be a non-empty string.")
+            raise AppValidationError("Project name must be a non-empty string.")
+        if start_date:
+            try:
+                datetime.strptime(start_date, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                logger.error(f"Project creation failed: Invalid start_date format '{start_date}'. Use YYYY-MM-DD.")
+                return None, "Invalid start_date format. Use YYYY-MM-DD."
+        if end_date:
+            try:
+                datetime.strptime(end_date, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                logger.error(f"Project creation failed: Invalid end_date format '{end_date}'. Use YYYY-MM-DD.")
+                return None, "Invalid end_date format. Use YYYY-MM-DD."
+        if start_date and end_date:
+            if datetime.strptime(start_date, "%Y-%m-%d") > datetime.strptime(end_date, "%Y-%m-%d"):
+                logger.error("Project creation failed: Start date cannot be after end date.")
+                return None, "Start date cannot be after end date."
+        if duration_days is not None:
+            if not isinstance(duration_days, int) or duration_days < 0:
+                logger.error(f"Project creation failed: Duration days '{duration_days}' must be a non-negative integer.")
+                return None, "Duration days must be a non-negative integer."
+
         # Check for existing project with the same name (using ProjectName from schema.sql)
         existing_project_query = "SELECT ProjectID FROM Projects WHERE ProjectName = ?"
         existing_project = self.db_manager.execute_query(existing_project_query, (project_name,), fetch_one=True)
@@ -173,11 +96,12 @@ class ProjectStartup:
             return existing_project['ProjectID'], f"Project '{project_name}' already exists."
 
         # Get ProjectStatusID for 'Pending'
-        pending_status_query = "SELECT ProjectStatusID FROM ProjectStatuses WHERE StatusName = 'Pending'"
-        status_row = self.db_manager.execute_query(pending_status_query, fetch_one=True)
+        pending_status_query = "SELECT ProjectStatusID FROM ProjectStatuses WHERE StatusName = ?"
+        status_row = self.db_manager.execute_query(pending_status_query, (constants.PROJECT_STATUS_PENDING,), fetch_one=True)
         if not status_row:
-            logger.error("Could not find 'Pending' status in ProjectStatuses table. Please ensure schema is up to date.")
-            return None, "Failed to create project: 'Pending' status not found."
+            msg = f"Could not find '{constants.PROJECT_STATUS_PENDING}' status in ProjectStatuses table. Please ensure schema is up to date."
+            logger.error(msg)
+            raise AppValidationError(msg)
         pending_status_id = status_row['ProjectStatusID']
 
         # Placeholder for CustomerID as it's NOT NULL in schema.sql Projects table
@@ -239,123 +163,125 @@ class ProjectStartup:
             logger.error("Cannot generate WBS: No project ID provided.")
             return False, "No project ID provided."
 
-        # Step 1: Link unassigned processed estimates to this project
-        link_success, link_msg, num_linked = self._link_unassigned_estimates_to_project(project_id)
-        if not link_success:
-            logger.error(f"Failed to link unassigned estimates to project {project_id}: {link_msg}")
-            # Depending on desired behavior, we might still proceed if some were already linked,
-            # or return False. For now, let's return if linking fails critically.
-            return False, f"Failed to link estimates: {link_msg}"
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
 
-        logger.info(f"{num_linked} unassigned processed estimates linked to project {project_id}. {link_msg}")
+            # Step 1: Link unassigned processed estimates to this project (within transaction)
+            # Check how many are unlinked first
+            query_count_unlinked = "SELECT COUNT(*) FROM processed_estimates WHERE ProjectID IS NULL"
+            cursor.execute(query_count_unlinked)
+            count_result = cursor.fetchone()
+            num_unlinked_before = count_result[0] if count_result else 0
 
-        # Step 2: Get processed estimates specifically for THIS project
-        processed_df = self._get_processed_estimates_for_project_df(project_id)
-        if processed_df.empty:
-            logger.info(f"No processed estimate data found for project ID {project_id} to generate WBS.")
-            # This could be normal if no estimates were linked or existed for this project.
-            return True, "No processed estimate data specifically for this project to generate WBS. If estimates were just linked, this might indicate an issue or no unlinked estimates were found."
+            if num_unlinked_before > 0:
+                update_estimates_query = "UPDATE processed_estimates SET ProjectID = ? WHERE ProjectID IS NULL"
+                cursor.execute(update_estimates_query, (project_id,))
+                # Verify rows affected if necessary, cursor.rowcount for sqlite
+                logger.info(f"Linked {cursor.rowcount} unassigned processed estimates to project ID {project_id}.")
+            else:
+                logger.info(f"No unassigned processed estimates found to link for project {project_id}.")
 
-        logger.info(f"Generating WBS for project ID: {project_id}...")
+            # Step 2: Get processed estimates specifically for THIS project
+            # This still uses db_manager.execute_query for fetching, which is fine as it doesn't commit.
+            processed_df = self._get_processed_estimates_for_project_df(project_id)
+            if processed_df.empty:
+                conn.commit() # Commit linking if that was done
+                logger.info(f"No processed estimate data found for project ID {project_id} to generate WBS.")
+                return True, "No processed estimate data for this project to generate WBS."
 
-        # Check if project exists (optional, but good practice)
-        project_details = self.get_project_details(project_id)
-        if not project_details:
-            return False, f"Project with ID {project_id} not found."
+            logger.info(f"Generating WBS for project ID: {project_id} with {len(processed_df)} estimates...")
 
-        # Get processed estimates for this project that are not yet linked to a WBS element
-        # Assuming 'wbs_elements' table has a 'ProcessedEstimateID' column to mark linkage
-        # and 'processed_estimates' has 'ProjectID'
-        # A ProcessedEstimateID might be linked to a WBS element if it was the primary source for it.
-        # The goal here is to create WBS elements from estimates that haven't been used to create one.
+            # Check if project exists (optional, but good practice)
+            project_details = self.get_project_details(project_id) # Uses db_manager.execute_query
+            if not project_details:
+                conn.rollback() # Nothing to commit if project doesn't exist
+                return False, f"Project with ID {project_id} not found."
 
-        # Let's fetch all processed estimates for the project first.
-        # The logic will then iterate and create/update WBS elements.
-        # This approach is more aligned with the original structure of iterating through processed_df.
+            # Clear existing WBS elements for the project
+            delete_wbs_query = "DELETE FROM wbs_elements WHERE ProjectID = ?"
+            cursor.execute(delete_wbs_query, (project_id,))
+            logger.info(f"Cleared {cursor.rowcount} existing WBS elements for project {project_id}.")
 
-        processed_df = self._get_processed_estimates_for_project_df(project_id)
-        if processed_df.empty:
-            logger.info(f"No processed estimate data found for project ID {project_id} to generate WBS.")
-            return True, "No processed estimate data for this project to generate WBS."
+            wbs_data_aggregated = self._aggregate_estimates_for_wbs(processed_df)
 
-        logger.info(f"Found {len(processed_df)} processed estimates for project {project_id}.")
+            created_wbs_count = 0
+            project_total_estimated_cost = 0.0
 
-        created_wbs_count = 0
-        updated_wbs_count = 0
-        project_total_estimated_cost = 0.0 # Recalculate based on WBS items
+            for wbs_code, data in wbs_data_aggregated.items():
+                main_processed_estimate_id = data['processed_estimate_ids'][0] if data['processed_estimate_ids'] else None
+                insert_wbs_query = """
+                INSERT INTO wbs_elements (ProjectID, WBSCode, Description, EstimatedCost, ProcessedEstimateID, Status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """
+                params = (project_id, wbs_code, data['description'], data['total_cost'], main_processed_estimate_id, constants.WBS_STATUS_PLANNED)
+                cursor.execute(insert_wbs_query, params)
+                if cursor.lastrowid:
+                    created_wbs_count += 1
+                    project_total_estimated_cost += data['total_cost']
+                else:
+                    # This path might not be hit if execute throws error, but good for safety
+                    logger.error(f"Failed to insert WBS element for WBSCode {wbs_code} in project {project_id} (no lastrowid).")
+                    # No explicit rollback here, let the main exception handler do it.
 
-        # Clear existing WBS elements for the project to avoid duplicates if re-running.
-        # This is a design choice: either append/update or clear-and-rebuild.
-        # For simplicity of this refactor, let's adopt a clear-and-rebuild for WBS from estimates.
-        # More sophisticated logic would update existing, add new, and remove obsolete.
+            if created_wbs_count != len(wbs_data_aggregated):
+                 logger.warning(f"Mismatch in WBS items to create ({len(wbs_data_aggregated)}) and actually created ({created_wbs_count}). Review for errors.")
+                 # Potentially raise an error to trigger rollback if this is critical
 
-        # Before deleting, store existing WBS costs if we need to reconcile project total cost later.
-        # For now, we recalculate project total cost from the newly generated WBS.
+            # Update the project's total estimated cost
+            update_project_cost_query = "UPDATE Projects SET EstimatedCost = ? WHERE ProjectID = ?"
+            cursor.execute(update_project_cost_query, (project_total_estimated_cost, project_id))
+            logger.info(f"Updated EstimatedCost for project {project_id} to {project_total_estimated_cost:.2f} (affected rows: {cursor.rowcount}).")
 
-        delete_wbs_query = "DELETE FROM wbs_elements WHERE ProjectID = ?"
-        self.db_manager.execute_query(delete_wbs_query, (project_id,), commit=True)
-        logger.info(f"Cleared existing WBS elements for project {project_id} before regeneration.")
+            conn.commit()
+            logger.info(f"Transaction committed for WBS generation, project {project_id}.")
+            if created_wbs_count > 0:
+                return True, f"Successfully generated/updated {created_wbs_count} WBS items for project {project_id}."
+            else:
+                # This case might occur if processed_df was not empty but wbs_data_aggregated ended up empty,
+                # or if all inserts somehow failed without raising an error caught by the outer try-except.
+                return True, "WBS generation processed, but no new WBS items were created. Check logs if estimates were expected."
 
-        # Using a dictionary to aggregate costs for WBS elements if multiple estimate lines map to the same WBSCode
+        except Exception as e: # Catching a more general exception
+            if conn:
+                conn.rollback()
+            logger.error(f"Error during WBS generation for project {project_id}: {e}", exc_info=True)
+            return False, f"Failed to generate WBS due to an error: {e}"
+
+    def _aggregate_estimates_for_wbs(self, processed_df: pd.DataFrame) -> dict:
+        """
+        Aggregates processed estimate data to form WBS elements.
+        Args:
+            processed_df: DataFrame of processed estimates for a single project.
+        Returns:
+            A dictionary where keys are WBSCodes and values are dicts with
+            'description', 'total_cost', and 'processed_estimate_ids'.
+        """
         wbs_data_aggregated = {}
+        if processed_df.empty:
+            return wbs_data_aggregated
 
         for _, row in processed_df.iterrows():
-            cost_code = row['CostCode']
-            description = row['Description'] # Use description from the first estimate line for this WBSCode
-            estimated_cost = row.get('TotalCost', 0.0) or 0.0 # Ensure it's a float
+            cost_code = row['CostCode'] # This will be the WBSCode
+            description = row['Description']
+            # Ensure TotalCost is treated as float, default to 0.0 if missing or invalid
+            try:
+                estimated_cost = float(row.get('TotalCost', 0.0))
+            except (ValueError, TypeError):
+                estimated_cost = 0.0
+
             processed_estimate_id = row['ProcessedEstimateID']
 
             if cost_code not in wbs_data_aggregated:
                 wbs_data_aggregated[cost_code] = {
-                    'description': description,
+                    'description': description, # Use description from the first estimate line for this WBSCode
                     'total_cost': 0.0,
                     'processed_estimate_ids': [] # Store all linked estimate IDs
                 }
             wbs_data_aggregated[cost_code]['total_cost'] += estimated_cost
             wbs_data_aggregated[cost_code]['processed_estimate_ids'].append(processed_estimate_id)
-
-        # Insert aggregated WBS elements
-        for wbs_code, data in wbs_data_aggregated.items():
-            # For ProcessedEstimateID in wbs_elements, we might link the first one,
-            # or handle multiple links if the schema supports it (e.g., a linking table).
-            # Current schema links one ProcessedEstimateID. We'll use the first one for now.
-            main_processed_estimate_id = data['processed_estimate_ids'][0] if data['processed_estimate_ids'] else None
-
-            insert_wbs_query = """
-            INSERT INTO wbs_elements (ProjectID, WBSCode, Description, EstimatedCost, ProcessedEstimateID, Status)
-            VALUES (?, ?, ?, ?, ?, 'Planned')
-            """
-            params = (project_id, wbs_code, data['description'], data['total_cost'], main_processed_estimate_id)
-
-            wbs_insert_success = self.db_manager.execute_query(insert_wbs_query, params, commit=True)
-            if wbs_insert_success:
-                created_wbs_count += 1
-                project_total_estimated_cost += data['total_cost']
-                # Update all contributing processed_estimates to link to this new WBSElementID
-                # This requires getting the WBSElementID of the just-inserted row.
-                # last_row_id_cursor = self.db_manager.execute_query("SELECT last_insert_rowid()", fetch_one=True)
-                # if last_row_id_cursor:
-                #    new_wbs_element_id = last_row_id_cursor[0]
-                #    for pe_id in data['processed_estimate_ids']:
-                #        # This part is complex if wbs_elements.ProcessedEstimateID is meant to be a unique FK.
-                #        # The schema allows ProcessedEstimateID to be NULL in wbs_elements,
-                #        # and it's not marked UNIQUE.
-                #        # The current approach of linking one main_processed_estimate_id is simpler.
-                #        # If a many-to-many is needed, schema change is required.
-                #        pass # No further update to processed_estimates for WBS link in this simplified model
-            else:
-                logger.error(f"Failed to insert WBS element for WBSCode {wbs_code} in project {project_id}")
-
-
-        # Update the project's total estimated cost
-        update_project_cost_query = "UPDATE Projects SET EstimatedCost = ? WHERE ProjectID = ?"
-        self.db_manager.execute_query(update_project_cost_query, (project_total_estimated_cost, project_id), commit=True)
-        logger.info(f"Updated EstimatedCost for project {project_id} to {project_total_estimated_cost:.2f}")
-
-        if created_wbs_count > 0:
-            return True, f"Successfully generated/updated {created_wbs_count} WBS items for project {project_id}."
-        else:
-            return True, f"No new WBS items to generate based on available estimates for project {project_id}, or an error occurred."
+        return wbs_data_aggregated
 
     def generate_project_budget(self, project_id):
         """
@@ -454,12 +380,13 @@ class ProjectStartup:
         resources_to_insert = []
         for detail in wbs_estimate_details:
             resource_description = detail['Description']
-            resource_type = 'Material' # Default type
+            resource_type = constants.RESOURCE_TYPE_MATERIAL # Default type
             unit = detail['Unit']
-            if unit and 'HR' in unit.upper(): # Example logic to determine resource type
-                resource_type = 'Labor'
+            if unit and 'HR' in unit.upper():
+                resource_type = constants.RESOURCE_TYPE_LABOR
             elif unit and 'LS' in unit.upper():
-                resource_type = 'Lump Sum' # More descriptive than 'Other'
+                resource_type = constants.RESOURCE_TYPE_LUMP_SUM
+            # Consider adding constants.RESOURCE_TYPE_OTHER if no specific match
 
             resources_to_insert.append((
                 detail['WBSElementID'],
@@ -480,15 +407,25 @@ class ProjectStartup:
             (WBSElementID, ResourceDescription, ResourceType, Quantity, UnitOfMeasure, UnitCost, TotalEstimatedCost)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
 
-        success = self.db_manager.execute_many_query(insert_query, resources_to_insert, commit=True)
+            # Note: The clearing of existing resources is done above and committed separately.
+            # If that should be part of this transaction, it needs to be moved here.
+            # For now, assuming clearing is a pre-step and this focuses on insertion.
 
-        if success:
+            cursor.executemany(insert_query, resources_to_insert)
+            conn.commit()
             logger.info(f"Successfully inserted {len(resources_to_insert)} resource details into WBSElementResources for project {project_id}.")
             return True, f"Successfully allocated {len(resources_to_insert)} WBS resource details."
-        else:
-            logger.error(f"Database error inserting into WBSElementResources for project {project_id}.")
-            return False, "Database error during WBS resource detail allocation."
+
+        except Exception as e: # Catching a more general exception
+            if conn:
+                conn.rollback()
+            logger.error(f"Database error inserting into WBSElementResources for project {project_id}: {e}", exc_info=True)
+            return False, f"Database error during WBS resource detail allocation: {e}"
 
     def get_project_details(self, project_id):
         """Retrieves details for a specific project using schema.sql structure."""
@@ -542,29 +479,85 @@ class ProjectStartup:
         Uses WBSElementID from schema.sql.
         """
         if not updates:
-            return False, "No updates provided."
+            raise AppValidationError("No updates provided for WBS element.")
 
-        # Validate wbs_element_id (ensure it exists)
+        if not isinstance(wbs_element_id, int) or wbs_element_id <= 0:
+            msg = f"Invalid WBS Element ID: {wbs_element_id}. Must be a positive integer."
+            logger.error(msg)
+            raise AppValidationError(msg)
+
         existing_wbs = self.get_wbs_element_details(wbs_element_id)
         if not existing_wbs:
-            return False, f"WBS Element with ID {wbs_element_id} not found."
+            msg = f"WBS Element with ID {wbs_element_id} not found."
+            logger.error(msg)
+            raise AppValidationError(msg) # Or AppOperationConflictError if preferred for "not found"
 
-        allowed_fields = ['Description', 'EstimatedCost', 'Status', 'StartDate', 'EndDate'] # Add more as needed from wbs_elements table
+        validated_updates = {}
+        allowed_fields = ['Description', 'EstimatedCost', 'Status', 'StartDate', 'EndDate']
+
+        for key, value in updates.items():
+            if key not in allowed_fields:
+                logger.warning(f"Attempted to update disallowed or unknown field: {key} in WBS Element {wbs_element_id}")
+                continue
+
+            if key == 'EstimatedCost':
+                try:
+                    cost = float(value)
+                    if cost < 0:
+                        msg = f"Invalid EstimatedCost '{value}' for WBS {wbs_element_id}. Cannot be negative."
+                        logger.error(msg)
+                        raise AppValidationError(msg)
+                    validated_updates[key] = cost
+                except (ValueError, TypeError):
+                    msg = f"Invalid EstimatedCost format '{value}' for WBS {wbs_element_id}."
+                    logger.error(msg)
+                    raise AppValidationError(msg)
+            elif key in ['StartDate', 'EndDate']:
+                if value is not None and value != "":
+                    try:
+                        datetime.strptime(str(value), "%Y-%m-%d")
+                        validated_updates[key] = str(value)
+                    except (ValueError, TypeError):
+                        msg = f"Invalid {key} format '{value}' for WBS {wbs_element_id}. Use YYYY-MM-DD."
+                        logger.error(msg)
+                        raise AppValidationError(msg)
+                else:
+                    validated_updates[key] = None
+            else:
+                 validated_updates[key] = value
+
+        start_date_to_check = validated_updates.get('StartDate', existing_wbs.get('StartDate'))
+        end_date_to_check = validated_updates.get('EndDate', existing_wbs.get('EndDate'))
+
+        if start_date_to_check and end_date_to_check:
+            if datetime.strptime(start_date_to_check, "%Y-%m-%d") > datetime.strptime(end_date_to_check, "%Y-%m-%d"):
+                msg = f"Date validation failed for WBS {wbs_element_id}: StartDate {start_date_to_check} cannot be after EndDate {end_date_to_check}."
+                logger.error(msg)
+                raise AppValidationError(msg)
+
+        if not validated_updates:
+            # This might mean only unknown fields were passed, or values were same as existing (if we add that check)
+            return True, "No valid updates to apply to WBS Element." # Or raise AppValidationError if appropriate
+
         update_clauses = []
         params = []
 
-        for key, value in updates.items():
-            if key in allowed_fields:
-                update_clauses.append(f"{key} = ?")
-                params.append(value)
-            else:
-                logger.warning(f"Attempted to update disallowed or unknown field: {key}")
+        # Build query based on validated_updates
+        for key, value in validated_updates.items():
+            # Only add to query if the value is different from existing or if it's a new field being set
+            # However, for simplicity and to ensure an update occurs if requested,
+            # we'll update all fields present in validated_updates.
+            # More sophisticated logic could check existing_wbs[key] != value
+            update_clauses.append(f"{key} = ?")
+            params.append(value)
 
         if not update_clauses:
-            return False, "No valid fields provided for update."
+             # This case should ideally be caught by "No valid fields provided for update or no changes detected."
+             # but as a safeguard:
+            return True, "No actual changes to apply to WBS Element."
+
 
         params.append(wbs_element_id) # For the WHERE clause
-
         query = f"UPDATE wbs_elements SET {', '.join(update_clauses)} WHERE WBSElementID = ?"
 
         success = self.db_manager.execute_query(query, tuple(params), commit=True)
@@ -637,12 +630,22 @@ class ProjectStartup:
         Returns:
             tuple: (bool, str) indicating success and a message.
         """
+        if not all([isinstance(project_id, int) and project_id > 0,
+                    document_name and isinstance(document_name, str),
+                    file_path and isinstance(file_path, str),
+                    isinstance(uploaded_by_employee_id, int) and uploaded_by_employee_id > 0]):
+            logger.error(f"Invalid parameters for add_design_drawing: ProjID {project_id}, DocName {document_name}, FilePath {file_path}, EmpID {uploaded_by_employee_id}")
+            return None, "Invalid parameters: ProjectID/EmployeeID must be positive integers, DocumentName/FilePath must be non-empty strings."
+
+        if description is not None and not isinstance(description, str):
+            logger.error(f"Invalid description type for add_design_drawing: {type(description)}")
+            return None, "Description, if provided, must be a string."
+
         query = """
         INSERT INTO ProjectDocuments (ProjectID, DocumentName, DocumentType, FilePath, UploadedByEmployeeID, Description, UploadDate)
         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """
-        document_type = "Design Drawing"  # Specific type for these uploads
-        params = (project_id, document_name, document_type, file_path, uploaded_by_employee_id, description)
+        params = (project_id, document_name, constants.DOC_TYPE_DESIGN_DRAWING, file_path, uploaded_by_employee_id, description)
 
         success = self.db_manager.execute_query(query, params, commit=True)
         if success:
@@ -668,8 +671,7 @@ class ProjectStartup:
         WHERE ProjectID = ? AND DocumentType = ?
         ORDER BY UploadDate DESC
         """
-        document_type = "Design Drawing"
-        rows = self.db_manager.execute_query(query, (project_id, document_type), fetch_all=True)
+        rows = self.db_manager.execute_query(query, (project_id, constants.DOC_TYPE_DESIGN_DRAWING), fetch_all=True)
         if rows:
             return [dict(row) for row in rows]
         return []
@@ -859,29 +861,11 @@ class ProjectStartup:
         If 'assembly_id' is provided, it's an update.
         Returns (new_or_updated_assembly_id, message).
         """
-        required_asm_fields = ['AssemblyItemNumber', 'AssemblyName']
-        for field in required_asm_fields:
-            if not assembly_details.get(field):
-                return None, f"Missing required assembly field: {field}"
-
-        # Validate components_list
-        if not isinstance(components_list, list):
-            return None, "Components list must be a list."
-        for comp in components_list:
-            if not comp.get('MaterialStockNumber') or not comp.get('QuantityInAssembly'):
-                return None, "Each component must have MaterialStockNumber and QuantityInAssembly."
-            try:
-                comp['QuantityInAssembly'] = float(comp['QuantityInAssembly'])
-                if comp['QuantityInAssembly'] <= 0:
-                    return None, "Component quantity must be positive."
-            except ValueError:
-                return None, "Invalid quantity for a component."
-
-        # Check for unique AssemblyItemNumber
-        check_item_num_query = "SELECT AssemblyID FROM Assemblies WHERE AssemblyItemNumber = ? AND (? IS NULL OR AssemblyID != ?)"
-        existing_assembly_item_num = db_manager.execute_query(check_item_num_query, (assembly_details['AssemblyItemNumber'], assembly_id, assembly_id), fetch_one=True)
-        if existing_assembly_item_num:
-            return None, f"Assembly Item Number '{assembly_details['AssemblyItemNumber']}' already exists."
+        validation_passed, validation_msg = self._validate_assembly_inputs(
+            assembly_details, components_list, assembly_id
+        )
+        if not validation_passed:
+            return None, validation_msg
 
         conn = None
         try:
@@ -962,6 +946,53 @@ class ProjectStartup:
             # The commit/rollback is sufficient for transaction management on the shared connection.
             pass
 
+    def _validate_assembly_inputs(self, assembly_details, components_list, assembly_id=None):
+        """Helper to validate inputs for manage_assembly."""
+        required_asm_fields = ['AssemblyItemNumber', 'AssemblyName']
+        for field in required_asm_fields:
+            if not assembly_details.get(field) or not isinstance(assembly_details.get(field), str):
+                return False, f"Missing or invalid assembly field: {field}. Must be a non-empty string."
+
+        if not isinstance(components_list, list):
+            return False, "Components list must be a list."
+        if not components_list: # Allowing empty components list for an assembly initially.
+             pass # Or: return False, "Components list cannot be empty."
+
+        for i, comp in enumerate(components_list):
+            if not isinstance(comp, dict):
+                return False, f"Component at index {i} is not a valid dictionary."
+            if not comp.get('MaterialStockNumber') or not isinstance(comp.get('MaterialStockNumber'), str):
+                return False, f"Component {i}: MaterialStockNumber is required and must be a string."
+            if comp.get('QuantityInAssembly') is None: # Check for None explicitly
+                 return False, f"Component {i}: QuantityInAssembly is required."
+            try:
+                qty = float(comp['QuantityInAssembly'])
+                if qty <= 0:
+                    return False, f"Component {i}: QuantityInAssembly must be positive."
+                comp['QuantityInAssembly'] = qty # Ensure it's float after validation
+            except (ValueError, TypeError):
+                return False, f"Component {i}: Invalid QuantityInAssembly. Must be a number."
+
+            if comp.get('UnitOfMeasure') is not None and not isinstance(comp.get('UnitOfMeasure'), str):
+                 return False, f"Component {i}: UnitOfMeasure, if provided, must be a string."
+
+
+        # Check for unique AssemblyItemNumber if creating new or changing it
+        # This check needs db_manager, so it's part of the main method's transaction or pre-check.
+        # For simplicity, keeping it in the main method before transaction starts.
+        # However, if we want this helper to be fully comprehensive for *all* input validation:
+        if assembly_details.get('AssemblyItemNumber'):
+            check_item_num_query = "SELECT AssemblyID FROM Assemblies WHERE AssemblyItemNumber = ? AND (? IS NULL OR AssemblyID != ?)"
+            existing_assembly_item_num = db_manager.execute_query(
+                check_item_num_query,
+                (assembly_details['AssemblyItemNumber'], assembly_id, assembly_id),
+                fetch_one=True
+            )
+            if existing_assembly_item_num:
+                return False, f"Assembly Item Number '{assembly_details['AssemblyItemNumber']}' already exists."
+
+        return True, "Validation successful."
+
     def get_assembly_details_by_item_number(self, assembly_item_number):
         """
         Retrieves assembly details and its components by AssemblyItemNumber.
@@ -1008,10 +1039,14 @@ class ProjectStartup:
         INSERT INTO Purchasing_Log (
             ProjectID, RequestedByEmployeeID, MaterialDescription, QuantityRequested,
             UnitOfMeasure, UrgencyLevel, RequiredByDate, Notes, Status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Requested')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             project_id, requested_by_employee_id, material_description, quantity_requested,
+            unit_of_measure, urgency_level, required_by_date, notes, constants.PURCHASE_STATUS_REQUESTED
+        )
+
+        try:
             unit_of_measure, urgency_level, required_by_date, notes
         )
 
@@ -1054,10 +1089,14 @@ class ProjectStartup:
         INSERT INTO Production_Assembly_Tracking (
             AssemblyID, ProjectID, QuantityToProduce, AssignedToEmployeeID,
             StartDate, CompletionDate, Notes, Status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Planned')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             assembly_id, project_id, quantity_to_produce, assigned_to_employee_id,
+            start_date, completion_date, notes, constants.PRODUCTION_STATUS_PLANNED
+        )
+
+        try:
             start_date, completion_date, notes
         )
 
@@ -1080,6 +1119,15 @@ class ProjectStartup:
 
     def add_document_note(self, document_id, page_number, employee_id, note_text):
         """Adds a note to a document page."""
+        if not (isinstance(document_id, int) and document_id > 0):
+            return False, "Invalid Document ID."
+        if not (isinstance(page_number, int) and page_number > 0): # Assuming page numbers are positive
+            return False, "Invalid Page Number."
+        if not (isinstance(employee_id, int) and employee_id > 0):
+            return False, "Invalid Employee ID."
+        if not note_text or not isinstance(note_text, str):
+            return False, "Note text cannot be empty."
+
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         query = """
         INSERT INTO document_notes (document_id, page_number, employee_id, note_text, created_at)
@@ -1087,18 +1135,21 @@ class ProjectStartup:
         """
         params = (document_id, page_number, employee_id, note_text, created_at)
 
-        # Assuming execute_query returns a truthy value (like cursor) on success for inserts,
-        # or we might need to adjust based on its actual return for non-select queries.
-        # If it returns True/False directly:
-        success = self.db_manager.execute_query(query, params, commit=True)
-        if success: # Or if success.lastrowid for some implementations
-            # To get the ID of the inserted note, if needed by caller:
-            # note_id = self.db_manager.execute_query("SELECT last_insert_rowid()", fetch_one=True)[0]
-            logger.info(f"Note added for document ID {document_id}, page {page_number} by employee {employee_id}.")
-            return True, "Note added successfully." # Optionally return note_id
-        else:
-            logger.error(f"Failed to add note for document ID {document_id}, page {page_number}.")
-            return False, "Failed to add note to the database."
+        try:
+            success = self.db_manager.execute_query(query, params, commit=True)
+            if success and success.lastrowid: # Check for truthy cursor and lastrowid for sqlite
+                logger.info(f"Note added (ID: {success.lastrowid}) for document ID {document_id}, page {page_number} by employee {employee_id}.")
+                return True, "Note added successfully."
+            elif success: # Fallback if lastrowid is not available but query succeeded
+                logger.info(f"Note added for document ID {document_id}, page {page_number} by employee {employee_id} (no lastrowid).")
+                return True, "Note added successfully (no ID)."
+            else:
+                logger.error(f"Failed to add note for document ID {document_id}, page {page_number}. execute_query returned: {success}")
+                return False, "Failed to add note to the database."
+        except Exception as e:
+            logger.error(f"Exception adding note for document ID {document_id}, page {page_number}: {e}", exc_info=True)
+            return False, f"Failed to add note due to an error: {e}"
+
 
     def get_document_notes(self, document_id):
         """Retrieves notes for a specific document, joined with employee names."""
@@ -1120,11 +1171,12 @@ class ProjectStartup:
         SELECT InternalLogID, ProjectID, MaterialDescription, QuantityRequested, UnitOfMeasure,
                UrgencyLevel, RequiredByDate, Status, DateCreated
         FROM Purchasing_Log
-        WHERE Status NOT IN ('Received Full', 'Cancelled')
+        WHERE Status NOT IN (?, ?)
         ORDER BY DateCreated DESC
         """
+        params = (constants.PURCHASE_STATUS_RECEIVED_FULL, constants.PURCHASE_STATUS_CANCELLED)
         try:
-            requests = self.db_manager.execute_query(query, fetch_all=True)
+            requests = self.db_manager.execute_query(query, params, fetch_all=True)
             if requests:
                 return [dict(req) for req in requests]
             return []
@@ -1138,11 +1190,12 @@ class ProjectStartup:
         SELECT ProductionID, AssemblyID, ProjectID, QuantityToProduce, Status,
                StartDate, CompletionDate, AssignedToEmployeeID, DateCreated
         FROM Production_Assembly_Tracking
-        WHERE Status NOT IN ('Completed', 'Shipped', 'Cancelled')
+        WHERE Status NOT IN (?, ?, ?)
         ORDER BY DateCreated DESC
         """
+        params = (constants.PRODUCTION_STATUS_COMPLETED, constants.PRODUCTION_STATUS_SHIPPED, constants.PRODUCTION_STATUS_CANCELLED)
         try:
-            orders = self.db_manager.execute_query(query, fetch_all=True)
+            orders = self.db_manager.execute_query(query, params, fetch_all=True)
             if orders:
                 return [dict(order) for order in orders]
             return []
