@@ -7,6 +7,7 @@ from database_manager import db_manager
 from configuration import Config
 from reporting import Reporting # To generate final reports
 from monitoring_control import MonitoringControl # Added import
+import constants # Added
 
 # Set up logging for the Closeout Module
 # BasicConfig is now handled in main.py for the application.
@@ -69,11 +70,11 @@ class Closeout:
         Uses 'Completed' status name as per schema.sql ProjectStatuses table.
         """
         # Get ProjectStatusID for 'Completed'
-        status_query = "SELECT ProjectStatusID FROM ProjectStatuses WHERE StatusName = 'Completed'"
-        status_row = self.db_manager.execute_query(status_query, fetch_one=True)
+        status_query = "SELECT ProjectStatusID FROM ProjectStatuses WHERE StatusName = ?"
+        status_row = self.db_manager.execute_query(status_query, (constants.PROJECT_STATUS_COMPLETED,), fetch_one=True)
         if not status_row:
-            logger.error("Could not find 'Completed' status in ProjectStatuses. Closeout cannot update project status.")
-            return False, "Critical error: 'Completed' status definition not found."
+            logger.error(f"Could not find '{constants.PROJECT_STATUS_COMPLETED}' status in ProjectStatuses. Closeout cannot update project status.")
+            return False, f"Critical error: '{constants.PROJECT_STATUS_COMPLETED}' status definition not found."
         completed_status_id = status_row['ProjectStatusID']
 
         # Get current EndDate if exists, otherwise use today
@@ -183,7 +184,8 @@ class Closeout:
         # Check if project status is already 'Completed' or 'Closed'
         # 'Completed' is the status set by mark_project_closed.
         # 'Closed' might be an alternative name in some contexts or future states.
-        if project_status_row['StatusName'] == 'Completed' or project_status_row['StatusName'] == 'Closed':
+        if project_status_row['StatusName'] == constants.PROJECT_STATUS_COMPLETED or \
+           project_status_row['StatusName'] == constants.PROJECT_STATUS_CLOSED:
             logger.warning(f"Project ID {project_id} is already '{project_status_row['StatusName']}'.")
             return False, f"Project ID {project_id} is already '{project_status_row['StatusName']}'."
 

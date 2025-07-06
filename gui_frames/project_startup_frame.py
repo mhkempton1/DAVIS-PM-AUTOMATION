@@ -1,11 +1,13 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog, messagebox
 import os
-# from datetime import datetime # No longer needed here, backend handles it
+from datetime import datetime # Needed for date validation
 from .base_frame import BaseModuleFrame
 from configuration import Config # For Config.get_data_dir()
+from exceptions import AppError, AppValidationError, AppOperationConflictError, AppDatabaseError
 # from database_manager import db_manager # No longer needed for direct calls here
 from tkPDFViewer import tkPDFViewer # For PDF viewing
+import PyPDF2 # Moved import to top level
 
 # Logger setup
 import logging
@@ -113,6 +115,14 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
 
         self.on_active_project_changed() # Set initial button states and load drawings if project active
 
+    def _is_valid_date(self, date_str):
+        """Checks if a string is a valid date in YYYY-MM-DD format."""
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
     # load_project_list method was for a treeview within this frame,
     # but project list is now in the main app's sidebar. So, this method is likely obsolete here.
     # def load_project_list(self): ...
@@ -129,21 +139,30 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             return
 
         if self.module and hasattr(self.module, 'get_wbs_element_details'):
-            details = self.module.get_wbs_element_details(wbs_id)
-            if details:
-                self.wbs_entries['wbs_description_entry'].delete(0, tk.END)
-                self.wbs_entries['wbs_description_entry'].insert(0, details.get('Description', ''))
-                self.wbs_entries['wbs_est_cost_entry'].delete(0, tk.END)
-                self.wbs_entries['wbs_est_cost_entry'].insert(0, str(details.get('EstimatedCost', '0.0')))
-                self.wbs_entries['wbs_status_entry'].delete(0, tk.END)
-                self.wbs_entries['wbs_status_entry'].insert(0, details.get('Status', ''))
-                self.wbs_entries['wbs_start_date_entry'].delete(0, tk.END)
-                self.wbs_entries['wbs_start_date_entry'].insert(0, details.get('StartDate', ''))
-                self.wbs_entries['wbs_end_date_entry'].delete(0, tk.END)
-                self.wbs_entries['wbs_end_date_entry'].insert(0, details.get('EndDate', ''))
-                self.show_message("WBS Details", f"Details for WBS ID {wbs_id} loaded.")
-            else:
-                self.show_message("Not Found", f"WBS Element with ID {wbs_id} not found.", True)
+            try:
+                details = self.module.get_wbs_element_details(wbs_id) # Backend might raise if not found
+                if details: # Or if get_wbs_element_details returns None instead of raising for not found
+                    self.wbs_entries['wbs_description_entry'].delete(0, tk.END)
+                    self.wbs_entries['wbs_description_entry'].insert(0, details.get('Description', ''))
+                    self.wbs_entries['wbs_est_cost_entry'].delete(0, tk.END)
+                    self.wbs_entries['wbs_est_cost_entry'].insert(0, str(details.get('EstimatedCost', '0.0')))
+                    self.wbs_entries['wbs_status_entry'].delete(0, tk.END)
+                    self.wbs_entries['wbs_status_entry'].insert(0, details.get('Status', ''))
+                    self.wbs_entries['wbs_start_date_entry'].delete(0, tk.END)
+                    self.wbs_entries['wbs_start_date_entry'].insert(0, details.get('StartDate', ''))
+                    self.wbs_entries['wbs_end_date_entry'].delete(0, tk.END)
+                    self.wbs_entries['wbs_end_date_entry'].insert(0, details.get('EndDate', ''))
+                    self.show_message("WBS Details", f"Details for WBS ID {wbs_id} loaded.")
+                else: # If backend returns None for not found instead of raising AppValidationError
+                    self.show_message("Not Found", f"WBS Element with ID {wbs_id} not found.", True)
+                    for entry in self.wbs_entries.values(): entry.delete(0, tk.END)
+            except AppError as ae:
+                logger.error(f"Error loading WBS details for ID {wbs_id}: {ae}", exc_info=True)
+                self.show_message("Load WBS Error", str(ae), is_error=True)
+                for entry in self.wbs_entries.values(): entry.delete(0, tk.END)
+            except Exception as e:
+                logger.error(f"Unexpected error loading WBS for ID {wbs_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
                 for entry in self.wbs_entries.values(): entry.delete(0, tk.END)
         else:
             self.show_message("Error", "Project Startup module or get_wbs_element_details method not available.", True)
@@ -160,31 +179,61 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             return
 
         updates = {}
-        # Populate updates from entry fields
+        # GUI-level validation for formats and basic logic
         if self.wbs_entries['wbs_description_entry'].get().strip():
             updates['Description'] = self.wbs_entries['wbs_description_entry'].get().strip()
-        if self.wbs_entries['wbs_est_cost_entry'].get().strip():
+
+        cost_str = self.wbs_entries['wbs_est_cost_entry'].get().strip()
+        if cost_str:
             try:
-                updates['EstimatedCost'] = float(self.wbs_entries['wbs_est_cost_entry'].get().strip())
+                cost = float(cost_str)
+                if cost < 0:
+                    self.show_message("Input Error", "Estimated Cost cannot be negative.", True)
+                    return
+                updates['EstimatedCost'] = cost
             except ValueError:
                 self.show_message("Input Error", "Estimated Cost must be a valid number.", True)
                 return
+
         if self.wbs_entries['wbs_status_entry'].get().strip():
             updates['Status'] = self.wbs_entries['wbs_status_entry'].get().strip()
-        if self.wbs_entries['wbs_start_date_entry'].get().strip():
-            updates['StartDate'] = self.wbs_entries['wbs_start_date_entry'].get().strip() # Add date validation
-        if self.wbs_entries['wbs_end_date_entry'].get().strip():
-            updates['EndDate'] = self.wbs_entries['wbs_end_date_entry'].get().strip() # Add date validation
+
+        start_date_str = self.wbs_entries['wbs_start_date_entry'].get().strip()
+        if start_date_str:
+            if not self._is_valid_date(start_date_str):
+                self.show_message("Input Error", "Invalid Start Date format. Please use YYYY-MM-DD.", True)
+                return
+            updates['StartDate'] = start_date_str
+
+        end_date_str = self.wbs_entries['wbs_end_date_entry'].get().strip()
+        if end_date_str:
+            if not self._is_valid_date(end_date_str):
+                self.show_message("Input Error", "Invalid End Date format. Please use YYYY-MM-DD.", True)
+                return
+            updates['EndDate'] = end_date_str
+
+        if start_date_str and end_date_str: # This check is also in backend, but good for GUI too
+            if datetime.strptime(start_date_str, "%Y-%m-%d") > datetime.strptime(end_date_str, "%Y-%m-%d"):
+                self.show_message("Input Error", "End Date cannot be before Start Date.", True)
+                return
 
         if not updates:
             self.show_message("No Changes", "No new values provided to update.")
             return
 
         if self.module and hasattr(self.module, 'update_wbs_element'):
-            success, message = self.module.update_wbs_element(wbs_id, updates)
-            self.show_message("Update WBS", message, not success)
-            if success:
-                self.load_wbs_details_action() # Refresh details
+            try:
+                # update_wbs_element now raises exceptions on failure or returns (True, message)
+                success, message = self.module.update_wbs_element(wbs_id, updates)
+                self.show_message("Update WBS", message, is_error=not success)
+                if success:
+                    self.load_wbs_details_action() # Refresh details
+            except AppError as ae:
+                logger.error(f"Error updating WBS ID {wbs_id}: {ae}", exc_info=True)
+                self.show_message("Update WBS Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error updating WBS ID {wbs_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Project Startup module or update_wbs_element method not available.", True)
 
@@ -256,13 +305,20 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             return # Cannot proceed without a valid EmployeeID
 
         if self.module and hasattr(self.module, 'add_design_drawing'):
-            document_id, message = self.module.add_design_drawing(
-                self.app.active_project_id, document_name, file_path,
-                employee_db_id, description # Pass the actual EmployeeID
-            )
-            self.show_message("Add Design Drawing", message, is_error=not bool(document_id))
-            if document_id:
-                self.load_design_drawings()
+            try:
+                document_id, message = self.module.add_design_drawing(
+                    self.app.active_project_id, document_name, file_path,
+                    employee_db_id, description
+                )
+                self.show_message("Add Design Drawing", message, is_error=not bool(document_id))
+                if document_id:
+                    self.load_design_drawings()
+            except AppError as ae:
+                logger.error(f"Error adding design drawing '{document_name}': {ae}", exc_info=True)
+                self.show_message("Add Drawing Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error adding drawing '{document_name}': {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Project Startup module or add_design_drawing method not available.", True)
 
@@ -375,12 +431,25 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             # tkPDFViewer.ShowPdf().get_page_count(file_path) might be a method if library provides it.
             # If not, we use PyPDF2 or PyMuPDF directly.
             # Let's assume PyPDF2 is available as it's a listed dependency.
-            import PyPDF2
-            with open(file_path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f) # Updated for PyPDF2 3.0.0+
-                return len(reader.pages)
-        except Exception as e:
-            logger.error(f"Error getting page count for {file_path} using PyPDF2: {e}")
+            import PyPDF2 # Ensure PyPDF2 is imported locally or at module level if not already
+            try:
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    return len(reader.pages)
+            except FileNotFoundError:
+                logger.error(f"File not found when trying to get page count: {file_path}")
+                self.show_message("Error", f"File not found: {file_path}", is_error=True) # Show error to user
+                return 1 # Default or error indicator
+            except Exception as e: # Catch other PyPDF2 errors or general errors
+                logger.error(f"Error getting page count for {file_path} using PyPDF2: {e}", exc_info=True)
+                self.show_message("PDF Error", f"Could not read PDF details for page count: {e}", is_error=True)
+                return 1 # Default or error indicator
+        except ImportError:
+            logger.error("PyPDF2 library is not installed. Cannot get PDF page count.")
+            self.show_message("Missing Library", "PyPDF2 is required to get PDF page count.", is_error=True)
+            return 1 # Default or error indicator
+        except Exception as e: # Catch errors before even trying PyPDF2, like path issues
+            logger.error(f"Generic error before getting page count for {file_path}: {e}", exc_info=True)
             # Fallback or default
             return 1
 
@@ -406,13 +475,20 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
 
         # Call backend to add note
         if self.module and hasattr(self.module, 'add_document_note'):
-            success, message = self.module.add_document_note(
-                document_id, page_number, employee_db_id, note_text # Use employee_db_id
-            )
-            self.show_message("Add Note", message, is_error=not success)
-            if success:
-                entry_widget.delete("1.0", tk.END)
-                self._load_document_notes_action(document_id, display_widget) # Refresh display
+            try:
+                success, message = self.module.add_document_note(
+                    document_id, page_number, employee_db_id, note_text
+                )
+                self.show_message("Add Note", message, is_error=not success)
+                if success:
+                    entry_widget.delete("1.0", tk.END)
+                    self._load_document_notes_action(document_id, display_widget)
+            except AppError as ae:
+                logger.error(f"Error adding document note for doc {document_id}, page {page_number}: {ae}", exc_info=True)
+                self.show_message("Add Note Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error adding note for doc {document_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Document notes backend functionality not available.", True)
             logger.error("ProjectStartup module or add_document_note method not available in frame.")
@@ -459,38 +535,45 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
             self.show_message("Cancelled", "Execute Data DNA cancelled by user.")
             return
 
-        # Step 1: Generate WBS (which now includes linking estimates)
-        # The backend method generate_wbs_from_estimates handles the core logic.
-        wbs_success, wbs_msg = self.module.generate_wbs_from_estimates(project_id)
-        self.show_message("WBS Generation", f"Project '{project_name}' - WBS Status: {wbs_msg}", is_error=not wbs_success)
-        if not wbs_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at WBS generation step.")
-            # Decide if we should stop or continue if WBS generation wasn't fully successful but didn't hard fail
-            # For now, let's return if wbs_success is False (indicating a definitive failure)
-            return
+        try:
+            # Step 1: Generate WBS (which now includes linking estimates)
+            wbs_success, wbs_msg = self.module.generate_wbs_from_estimates(project_id)
+            self.show_message("WBS Generation", f"Project '{project_name}' - WBS Status: {wbs_msg}", is_error=not wbs_success)
+            if not wbs_success:
+                # Backend method now raises exceptions for critical failures,
+                # but might return (False, message) for non-critical ones or partial successes.
+                # If generate_wbs_from_estimates is fully converted to raise exceptions, this 'if not wbs_success' might be less needed.
+                logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) - WBS generation reported an issue: {wbs_msg}")
+                # Depending on how critical, might re-raise or just inform user.
+                # For now, we'll let it proceed to show the message from the operation.
+                # If an exception was raised, it would be caught by the outer try-except.
+                return # Stop if WBS step reports failure
 
-        # Step 2: Generate Budget (relies on WBS being present)
-        budget_success, budget_msg = self.module.generate_project_budget(project_id)
-        self.show_message("Budget Generation", f"Project '{project_name}' - Budget Status: {budget_msg}", is_error=not budget_success)
-        if not budget_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at Budget generation step.")
-            # Potentially return, or just log and continue to resource allocation
+            # Step 2: Generate Budget (relies on WBS being present)
+            budget_success, budget_msg = self.module.generate_project_budget(project_id)
+            self.show_message("Budget Generation", f"Project '{project_name}' - Budget Status: {budget_msg}", is_error=not budget_success)
+            if not budget_success:
+                logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) - Budget generation reported an issue: {budget_msg}")
+                return # Stop if Budget step reports failure
 
-        # Step 3: Allocate Resources (relies on WBS/Estimates)
-        resources_success, resources_msg = self.module.allocate_resources(project_id) # This method also needs to exist in backend
-        self.show_message("Resource Allocation", f"Project '{project_name}' - Resource Status: {resources_msg}", is_error=not resources_success)
-        if not resources_success:
-            logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) failed or had issues at Resource allocation step.")
+            # Step 3: Allocate Resources (relies on WBS/Estimates)
+            resources_success, resources_msg = self.module.allocate_resources(project_id)
+            self.show_message("Resource Allocation", f"Project '{project_name}' - Resource Status: {resources_msg}", is_error=not resources_success)
+            if not resources_success:
+                logger.error(f"Execute Data DNA for {project_name} (ID: {project_id}) - Resource allocation reported an issue: {resources_msg}")
+                return # Stop if Resource step reports failure
 
-        # Final message
-        if wbs_success and budget_success and resources_success:
-            self.show_message("Execute Data DNA", f"'Execute Data DNA' process completed successfully for project '{project_name}'.")
-        else:
-            self.show_message("Execute Data DNA", f"'Execute Data DNA' process completed for project '{project_name}' with some issues. Please check logs and messages.", is_error=True)
+            self.show_message("Execute Data DNA", f"'Execute Data DNA' process completed for project '{project_name}'. Review individual step messages.", is_error=False)
 
-        logger.info(f"'Execute Data DNA' process finished for project: {project_name} (ID: {project_id}).")
-
-        if hasattr(self.app, 'load_project_list_data'):
+        except AppError as ae:
+            logger.error(f"Data DNA process for project '{project_name}' failed: {ae}", exc_info=True)
+            self.show_message("Data DNA Failed", str(ae), is_error=True)
+        except Exception as e:
+            logger.error(f"Unexpected error during Data DNA for '{project_name}': {e}", exc_info=True)
+            self.show_message("System Error", "An unexpected error occurred during Data DNA. Check logs.", is_error=True)
+        finally:
+            logger.info(f"'Execute Data DNA' process finished or terminated for project: {project_name} (ID: {project_id}).")
+            if hasattr(self.app, 'load_project_list_data'):
             self.app.load_project_list_data() # Refresh project list in sidebar
 
 
@@ -512,8 +595,15 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         if self.module and hasattr(self.module, 'generate_wbs_from_estimates'):
             if not messagebox.askyesno("Confirm Ad-hoc WBS", f"Generate/Re-generate WBS for Project ID {proj_id} using available estimates? This will clear existing WBS elements for this project.", parent=self):
                 return
-            success, msg = self.module.generate_wbs_from_estimates(proj_id) # This now returns (bool, str)
-            self.show_message("Ad-hoc WBS Generation", msg, is_error=not success) # Pass is_error correctly
+            try:
+                success, msg = self.module.generate_wbs_from_estimates(proj_id)
+                self.show_message("Ad-hoc WBS Generation", msg, is_error=not success)
+            except AppError as ae:
+                logger.error(f"Ad-hoc WBS generation for P:{proj_id} failed: {ae}", exc_info=True)
+                self.show_message("WBS Generation Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error ad-hoc WBS for P:{proj_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Project Startup module or WBS method not available.", True)
 
@@ -523,8 +613,15 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         if self.module and hasattr(self.module, 'generate_project_budget'):
             if not messagebox.askyesno("Confirm Ad-hoc Budget", f"Generate budget for Project ID {proj_id} from its WBS? This is an ad-hoc operation.", parent=self):
                 return
-            success, msg = self.module.generate_project_budget(proj_id)
-            self.show_message("Ad-hoc Budget Generation", msg, not success)
+            try:
+                success, msg = self.module.generate_project_budget(proj_id)
+                self.show_message("Ad-hoc Budget Generation", msg, is_error=not success)
+            except AppError as ae:
+                logger.error(f"Ad-hoc Budget generation for P:{proj_id} failed: {ae}", exc_info=True)
+                self.show_message("Budget Generation Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error ad-hoc Budget for P:{proj_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Project Startup module or budget method not available.", True)
 
@@ -534,7 +631,14 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         if self.module and hasattr(self.module, 'allocate_resources'):
             if not messagebox.askyesno("Confirm Ad-hoc Resources", f"Allocate resources for Project ID {proj_id} from its WBS/estimates? This is an ad-hoc operation.", parent=self):
                 return
-            success, msg = self.module.allocate_resources(proj_id)
-            self.show_message("Ad-hoc Resource Allocation", msg, not success)
+            try:
+                success, msg = self.module.allocate_resources(proj_id)
+                self.show_message("Ad-hoc Resource Allocation", msg, is_error=not success)
+            except AppError as ae:
+                logger.error(f"Ad-hoc Resource allocation for P:{proj_id} failed: {ae}", exc_info=True)
+                self.show_message("Resource Allocation Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error ad-hoc Resources for P:{proj_id}: {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
         else:
             self.show_message("Error", "Project Startup module or resource allocation method not available.", True)

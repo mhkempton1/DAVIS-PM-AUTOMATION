@@ -149,7 +149,7 @@ class DatabaseManager:
                 return cursor.fetchall()
             return True
         except sqlite3.Error as e:
-            logger.error(f"Database error: {query[:100]}... - {e}")
+            logger.error(f"Database error executing query: {query[:100]}... - Error: {e}", exc_info=True)
             if commit:
                 try:
                     self.conn.rollback()
@@ -165,7 +165,7 @@ class DatabaseManager:
                 self.conn.commit()
             return True
         except sqlite3.Error as e:
-            logger.error(f"Database error (executemany): {query[:100]}... - {e}")
+            logger.error(f"Database error during executemany: {query[:100]}... - Error: {e}", exc_info=True)
             if commit:
                 try:
                     self.conn.rollback()

@@ -5,6 +5,7 @@ from database_manager import db_manager
 from configuration import Config
 from monitoring_control import MonitoringControl # To get performance analysis data
 import numpy as np # Was missing, needed by MonitoringControl, good to have here too if pandas NaN is used
+import constants # Added
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +241,9 @@ class Reporting:
                 for task in tasks_ongoing:
                     summary_lines.append(f"  - {task}")
 
-            materials_used = group_df[group_df['MaterialType'] == 'Used']['MaterialDescription'].dropna().unique()
-            materials_needed = group_df[group_df['MaterialType'] == 'Needed']['MaterialDescription'].dropna().unique()
+            materials_used = group_df[group_df['MaterialType'] == constants.MATERIAL_LOG_TYPE_USED]['MaterialDescription'].dropna().unique()
+            materials_needed = group_df[group_df['MaterialType'] == constants.MATERIAL_LOG_TYPE_NEEDED]['MaterialDescription'].dropna().unique()
+            # Consider constants.MATERIAL_LOG_TYPE_DELIVERED if it's used in data
 
             if len(materials_used) > 0:
                 summary_lines.append("Materials Used:")
@@ -252,9 +254,10 @@ class Reporting:
                 for mat in materials_needed:
                     summary_lines.append(f"  - {mat}")
 
-            safety_obs = group_df[group_df['ObservationType'] == 'Safety']['ObservationDescription'].dropna().unique()
-            issues_obs = group_df[group_df['ObservationType'] == 'Issue']['ObservationDescription'].dropna().unique()
-            tool_obs = group_df[group_df['ObservationType'] == 'Tool']['ObservationDescription'].dropna().unique()
+            safety_obs = group_df[group_df['ObservationType'] == constants.OBS_TYPE_SAFETY]['ObservationDescription'].dropna().unique()
+            issues_obs = group_df[group_df['ObservationType'] == constants.OBS_TYPE_ISSUE]['ObservationDescription'].dropna().unique()
+            tool_obs = group_df[group_df['ObservationType'] == constants.OBS_TYPE_TOOL]['ObservationDescription'].dropna().unique()
+            # Consider constants.OBS_TYPE_GENERAL if it's used
 
             if len(safety_obs) > 0:
                 summary_lines.append("Safety Observations:")

@@ -3,6 +3,8 @@ from tkinter import ttk, messagebox, simpledialog
 import pandas as pd
 from .base_frame import BaseModuleFrame
 from configuration import Config
+from exceptions import AppValidationError, AppOperationConflictError, AppDatabaseError, AppError # Added AppError
+import constants # Added
 import logging
 
 logger = logging.getLogger(__name__)
@@ -180,10 +182,26 @@ class UserManagementModuleFrame(BaseModuleFrame):
             self.show_message("Input Error", "Username, Password, and Role are required.", True)
             return
 
-        success, msg = self.module.create_user(username, password, role, employee_id=employee_id_to_link)
-        self.show_message("Create User", msg, is_error=not success)
-        if success:
-            self.create_username_entry.delete(0, tk.END)
+        try:
+            # Assuming create_user now might return (True, message) on success,
+            # or raise AppError on failure.
+            success, msg = self.module.create_user(username, password, role, employee_id=employee_id_to_link)
+            self.show_message("Create User", msg, is_error=not success) # is_error based on success flag
+            if success:
+                self.create_username_entry.delete(0, tk.END)
+                self.create_password_entry.delete(0, tk.END)
+                if Config.ROLE_PERMISSIONS.keys(): self.create_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
+                self.load_unlinked_employees_for_combos() # Refresh employee list
+        except (AppValidationError, AppOperationConflictError, AppDatabaseError) as ae:
+            logger.error(f"Error creating user '{username}': {ae}", exc_info=True)
+            self.show_message("Create User Error", str(ae), is_error=True)
+        except Exception as e: # Catch any other unexpected errors
+            logger.error(f"Unexpected error creating user '{username}': {e}", exc_info=True)
+            self.show_message("System Error", "An unexpected error occurred during user creation. Check logs.", is_error=True)
+
+
+    def update_user_details_action(self):
+        """Handles updating role and employee link."""
             self.create_password_entry.delete(0, tk.END)
             if Config.ROLE_PERMISSIONS.keys(): self.create_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
             self.load_unlinked_employees_for_combos() # Refresh employee list
@@ -224,52 +242,94 @@ class UserManagementModuleFrame(BaseModuleFrame):
             link_updated_success, link_msg = self.module.update_user_employee_link(username, employee_id_to_link)
             self.show_message("Update Employee Link", link_msg, is_error=not link_updated_success)
 
-        if role_updated_success and link_updated_success:
-            self.manage_username_entry.delete(0, tk.END)
-            if Config.ROLE_PERMISSIONS.keys(): self.update_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
-            self.load_unlinked_employees_for_combos() # Refresh lists
-            self.manage_employee_link_combo.set("(None - Unlinked)") # Reset this specifically
-            self.show_message("Update User", f"User '{username}' details updated.", parent=self)
+        try:
+            role_updated_success, role_msg = True, "Role not changed or no update attempted."
+            if new_role and new_role != current_user_details.get('role'):
+                role_updated_success, role_msg = self.module.update_user_role(username, new_role)
+
+            link_updated_success, link_msg = True, "Link not changed or no update attempted."
+            if employee_id_to_link != current_user_details.get('employee_db_id'): # Also handles None correctly
+                link_updated_success, link_msg = self.module.update_user_employee_link(username, employee_id_to_link)
+
+            # Combine messages or show separately
+            final_message = []
+            if not role_updated_success: final_message.append(f"Role: {role_msg}")
+            if not link_updated_success: final_message.append(f"Link: {link_msg}")
+
+            if role_updated_success and link_updated_success:
+                self.manage_username_entry.delete(0, tk.END)
+                if Config.ROLE_PERMISSIONS.keys(): self.update_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
+                self.load_unlinked_employees_for_combos()
+                self.manage_employee_link_combo.set("(None - Unlinked)")
+                self.show_message("Update User", f"User '{username}' details processed. Role: {role_msg}. Link: {link_msg}", parent=self)
+            else:
+                # If one part succeeded but other failed, it's tricky. Backend should be transactional for this ideally.
+                # For now, show combined error messages.
+                self.show_message("Update User Error", f"Issues updating '{username}': {'; '.join(final_message)}", is_error=True, parent=self)
+
+        except AppError as ae:
+            logger.error(f"Error updating user '{username}': {ae}", exc_info=True)
+            self.show_message("Update User Error", str(ae), is_error=True)
+        except Exception as e:
+            logger.error(f"Unexpected error updating user '{username}': {e}", exc_info=True)
+            self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
 
 
     def delete_user_action(self):
-        # ... (implementation remains similar, ensure self.module check) ...
         if not self.module: self.show_message("Error", "User Management module not available.", True); return
         username = self.manage_username_entry.get().strip()
         if not username:
             self.show_message("Input Error", "Username is required for deletion.", True)
             return
-        if username.lower() == Config.DEFAULT_ADMIN_USERNAME.lower() and username.lower() != "admin_test_user_to_delete": # Protect default admin
+        if username.lower() == Config.DEFAULT_ADMIN_USERNAME.lower() and username.lower() != "admin_test_user_to_delete":
              self.show_message("Action Denied", "Default admin user cannot be deleted this way.", True)
              return
+
         if messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete user '{username}'?", parent=self):
-            success, msg = self.module.delete_user(username)
-            self.show_message("Delete User", msg, is_error=not success)
-            if success:
-                self.manage_username_entry.delete(0, tk.END)
-                self.load_unlinked_employees_for_combos() # Refresh employee list
+            try:
+                success, msg = self.module.delete_user(username) # Assumes delete_user might still return tuple
+                self.show_message("Delete User", msg, is_error=not success)
+                if success:
+                    self.manage_username_entry.delete(0, tk.END)
+                    self.load_unlinked_employees_for_combos()
+            except AppError as ae:
+                logger.error(f"Error deleting user '{username}': {ae}", exc_info=True)
+                self.show_message("Delete User Error", str(ae), is_error=True)
+            except Exception as e:
+                logger.error(f"Unexpected error deleting user '{username}': {e}", exc_info=True)
+                self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
 
     def change_password_action(self):
-        # ... (implementation remains similar, ensure self.module check) ...
-        if self.app.current_user_role != 'admin':
+        if self.app.current_user_role != constants.ROLE_ADMIN:
             self.show_message("Access Denied", "Only administrators can change passwords.", True)
             return
+
         username = simpledialog.askstring("Change Password", "Enter username for password change:", parent=self)
         if not username: return
-        # ... rest of password change logic ...
+
         if not self.module or not hasattr(self.module, 'change_user_password'):
             self.show_message("Error", "User Management module not available for password change.", True)
             return
-        # ... (the rest of the method)
+
         new_password = simpledialog.askstring("Change Password", f"Enter new password for {username}:", show='*', parent=self)
         if not new_password: return
         confirm_password = simpledialog.askstring("Change Password", "Confirm new password:", show='*', parent=self)
         if not confirm_password: return
+
         if new_password != confirm_password:
-            self.show_message("Error", "Passwords do not match.", True)
+            self.show_message("Error", "Passwords do not match.", True) # GUI validation
             return
-        success, msg = self.module.change_user_password(username, new_password)
-        self.show_message("Change Password", msg, is_error=not success)
+
+        try:
+            # Assuming change_user_password might still return (True, msg) or raise AppError
+            success, msg = self.module.change_user_password(username, new_password)
+            self.show_message("Change Password", msg, is_error=not success)
+        except AppError as ae:
+            logger.error(f"Error changing password for '{username}': {ae}", exc_info=True)
+            self.show_message("Change Password Error", str(ae), is_error=True)
+        except Exception as e:
+            logger.error(f"Unexpected error changing password for '{username}': {e}", exc_info=True)
+            self.show_message("System Error", "An unexpected error occurred. Check logs.", is_error=True)
 
 
     def list_users_action(self):

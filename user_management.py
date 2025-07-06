@@ -5,6 +5,7 @@ import sqlite3 # For specific error handling like IntegrityError
 
 from configuration import Config
 from database_manager import db_manager
+from exceptions import AppValidationError, AppOperationConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -29,29 +30,38 @@ class UserManagement:
         Creates a new user with username, password, role, and optional EmployeeID.
         Returns: tuple (bool, str) indicating success and a message.
         """
-        if role not in Config.get_role_permissions():
-            logger.warning(f"Attempted to create user '{username}' with invalid role '{role}'.")
-            return False, "Invalid role specified."
+        if not username or not isinstance(username, str):
+            return False, "Username must be a non-empty string."
+        if not password or not isinstance(password, str):
+            # Password strength rules could be added here later
+            return False, "Password must be a non-empty string."
+        if not role or role not in Config.get_role_permissions():
+            msg = f"Attempted to create user '{username}' with invalid role '{role}'."
+            logger.warning(msg)
+            raise AppValidationError(msg)
 
         if employee_id is not None:
             try:
-                employee_id = int(employee_id) # Ensure it's an int
+                employee_id = int(employee_id)
                 emp_exists_query = "SELECT EmployeeID FROM Employees WHERE EmployeeID = ?"
                 if not self.db_manager.execute_query(emp_exists_query, (employee_id,), fetch_one=True):
-                    logger.warning(f"Attempt to create user '{username}' with non-existent EmployeeID {employee_id}.")
-                    return False, f"EmployeeID {employee_id} does not exist in Employees table."
+                    msg = f"Attempt to create user '{username}' with non-existent EmployeeID {employee_id}."
+                    logger.warning(msg)
+                    raise AppValidationError(msg)
 
                 emp_linked_query = "SELECT username FROM users WHERE EmployeeID = ?"
                 existing_link = self.db_manager.execute_query(emp_linked_query, (employee_id,), fetch_one=True)
                 if existing_link:
-                    logger.warning(f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'.")
-                    return False, f"EmployeeID {employee_id} is already linked to another user."
+                    msg = f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'."
+                    logger.warning(msg)
+                    raise AppOperationConflictError(msg)
             except ValueError:
-                 logger.warning(f"Invalid EmployeeID format for user '{username}': {employee_id}.")
-                 return False, "EmployeeID must be a valid number."
-            except Exception as e_val:
+                 msg = f"Invalid EmployeeID format for user '{username}': {employee_id}."
+                 logger.warning(msg)
+                 raise AppValidationError(msg)
+            except Exception as e_val: # Catch other validation exceptions, wrap them
                 logger.error(f"Error validating EmployeeID for user '{username}': {e_val}", exc_info=True)
-                return False, f"Error validating EmployeeID: {e_val}"
+                raise AppValidationError(f"Error validating EmployeeID: {e_val}")
 
         password_hash = self._hash_password(password)
         insert_query = "INSERT INTO users (username, password_hash, role, EmployeeID) VALUES (?, ?, ?, ?)"
@@ -68,19 +78,24 @@ class UserManagement:
                 existing_user_check = self.db_manager.execute_query(
                     "SELECT id FROM users WHERE username = ?", (username,), fetch_one=True
                 )
-                if existing_user_check:
-                    return False, "Username already exists."
-                return False, "Failed to create user due to a database error."
+                if existing_user_check: # This check might be redundant if IntegrityError is handled well
+                    raise AppOperationConflictError("Username already exists.")
+                # General failure if not caught by IntegrityError but success_cursor is false
+                raise AppDatabaseError("Failed to create user due to an unspecified database error.")
         except sqlite3.IntegrityError as ie:
-             logger.error(f"Integrity error creating user '{username}': {ie}", exc_info=True)
-             if "UNIQUE constraint failed: users.username" in str(ie):
-                 return False, "Username already exists."
-             if "FOREIGN KEY constraint failed" in str(ie) and employee_id is not None:
-                 return False, f"Invalid EmployeeID {employee_id} or foreign key constraint violation."
-             return False, f"Database integrity error: {ie}"
-        except Exception as e:
+            logger.error(f"Integrity error creating user '{username}': {ie}", exc_info=True)
+            if "UNIQUE constraint failed: users.username" in str(ie):
+                raise AppOperationConflictError("Username already exists.")
+            if "FOREIGN KEY constraint failed" in str(ie) and employee_id is not None:
+                # This indicates an issue with EmployeeID that wasn't caught by earlier checks,
+                # or a problem with the Employees table itself.
+                raise AppValidationError(f"Invalid EmployeeID {employee_id} or foreign key constraint violation with Employees table.")
+            raise AppDatabaseError(f"Database integrity error: {ie}") # Wrap other integrity errors
+        except Exception as e: # Catch other, non-sqlite exceptions
             logger.error(f"Unexpected exception creating user '{username}': {e}", exc_info=True)
-            return False, f"An unexpected error occurred: {e}"
+            # Wrap it in a generic AppError or re-raise if it's something that should propagate
+            raise AppError(f"An unexpected error occurred during user creation: {e}")
+
 
     def authenticate_user(self, username, password):
         password_hash = self._hash_password(password)
@@ -106,21 +121,38 @@ class UserManagement:
     def update_user_role(self, username, new_role):
         if new_role not in Config.get_role_permissions():
             return False, "Invalid role specified."
-        user_details = self.get_user_details_by_username(username)
+
+        if not username or not isinstance(username, str):
+            msg = "update_user_role: Username cannot be empty."
+            logger.warning(msg)
+            raise AppValidationError(msg)
+
+        user_details = self.get_user_details_by_username(username) # This can return None
         if not user_details:
-            return False, f"User '{username}' not found."
+            msg = f"User '{username}' not found for role update."
+            logger.warning(msg)
+            raise AppValidationError(msg) # Or AppOperationConflictError
 
         query = "UPDATE users SET role = ? WHERE username = ?"
         success = self.db_manager.execute_query(query, (new_role, username), commit=True)
         if success:
             return True, f"Role for '{username}' updated to '{new_role}'."
-        return False, "Failed to update role."
+        # If execute_query returns False, it means a DB error occurred (already logged by db_manager)
+        raise AppDatabaseError(f"Failed to update role for user '{username}'.")
+
 
     def update_user_employee_link(self, username, employee_id):
         """Links or unlinks an app user to an EmployeeID."""
+        if not username or not isinstance(username, str):
+            msg = "update_user_employee_link: Username cannot be empty."
+            logger.warning(msg)
+            raise AppValidationError(msg)
+
         user_details = self.get_user_details_by_username(username)
         if not user_details:
-            return False, f"User '{username}' not found."
+            msg = f"User '{username}' not found for employee link update."
+            logger.warning(msg)
+            raise AppValidationError(msg)
 
         app_user_id = user_details['app_user_id']
 
@@ -129,18 +161,16 @@ class UserManagement:
                 employee_id = int(employee_id)
                 emp_exists_query = "SELECT EmployeeID FROM Employees WHERE EmployeeID = ?"
                 if not self.db_manager.execute_query(emp_exists_query, (employee_id,), fetch_one=True):
-                    return False, f"EmployeeID {employee_id} does not exist."
+                    raise AppValidationError(f"EmployeeID {employee_id} does not exist.")
 
-                # Check if this EmployeeID is already linked to another app user
                 emp_linked_query = "SELECT username FROM users WHERE EmployeeID = ? AND id != ?"
                 existing_link = self.db_manager.execute_query(emp_linked_query, (employee_id, app_user_id), fetch_one=True)
                 if existing_link:
-                    return False, f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'."
+                    raise AppOperationConflictError(f"EmployeeID {employee_id} is already linked to user '{existing_link['username']}'.")
             except ValueError:
-                return False, "EmployeeID must be a valid number."
-            except Exception as e_val:
-                logger.error(f"Error validating EmployeeID for linking user '{username}': {e_val}", exc_info=True)
-                return False, f"Error validating EmployeeID: {e_val}"
+                raise AppValidationError("EmployeeID must be a valid number.")
+            # AppValidationError or AppOperationConflictError are already specific, no need to wrap them further.
+            # Other exceptions from db_manager.execute_query (like sqlite3.Error) will be caught by the caller if not handled here.
 
         query = "UPDATE users SET EmployeeID = ? WHERE id = ?"
         success = self.db_manager.execute_query(query, (employee_id, app_user_id), commit=True)
@@ -148,10 +178,14 @@ class UserManagement:
             action = f"linked to EmployeeID {employee_id}" if employee_id is not None else "unlinked from Employee record"
             logger.info(f"User '{username}' (AppUserID: {app_user_id}) {action}.")
             return True, f"User '{username}' successfully {action}."
-        return False, f"Failed to update EmployeeID link for user '{username}'."
+
+        raise AppDatabaseError(f"Failed to update EmployeeID link for user '{username}'.")
 
     def delete_user(self, username):
-        # ... (implementation remains similar) ...
+        if not username or not isinstance(username, str):
+            logger.warning("delete_user: Username cannot be empty.")
+            return False, "Username cannot be empty."
+
         check_user_query = "SELECT id FROM users WHERE username = ?"
         user_exists = self.db_manager.execute_query(check_user_query, (username,), fetch_one=True)
 
@@ -182,7 +216,11 @@ class UserManagement:
         return has_access
 
     def change_user_password(self, username, new_password):
-        # ... (implementation remains similar) ...
+        if not username or not isinstance(username, str):
+            return False, "Username must be a non-empty string."
+        if not new_password or not isinstance(new_password, str):
+            return False, "New password must be a non-empty string."
+
         check_user_query = "SELECT id FROM users WHERE username = ?"
         user_exists = self.db_manager.execute_query(check_user_query, (username,), fetch_one=True)
 
