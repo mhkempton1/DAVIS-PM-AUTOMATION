@@ -5,7 +5,7 @@ import sqlite3 # For specific error handling like IntegrityError
 
 from configuration import Config
 from database_manager import db_manager
-from exceptions import AppValidationError, AppOperationConflictError
+from exceptions import AppValidationError, AppOperationConflictError, AppDatabaseError, AppError
 
 logger = logging.getLogger(__name__)
 
@@ -98,25 +98,37 @@ class UserManagement:
 
 
     def authenticate_user(self, username, password):
-        password_hash = self._hash_password(password)
-        query = "SELECT role FROM users WHERE username = ? AND password_hash = ?"
-        result = self.db_manager.execute_query(query, (username, password_hash), fetch_one=True)
-        if result:
-            logger.info(f"User '{username}' authenticated successfully with role '{result['role']}'.")
-            return result['role']
-        else:
-            logger.warning(f"Authentication failed for user '{username}'.")
+        try:
+            password_hash = self._hash_password(password)
+            query = "SELECT role FROM users WHERE username = ? AND password_hash = ?"
+            result = self.db_manager.execute_query(query, (username, password_hash), fetch_one=True)
+            if result:
+                logger.info(f"User '{username}' authenticated successfully with role '{result['role']}'.")
+                return result['role']
+            else:
+                logger.warning(f"Authentication failed for user '{username}'.")
+                return None
+        except Exception as e:
+            logger.error(f"Error during user authentication for '{username}': {e}", exc_info=True)
             return None
 
     def get_user_role(self, username):
-        query = "SELECT role FROM users WHERE username = ?"
-        result = self.db_manager.execute_query(query, (username,), fetch_one=True)
-        return result['role'] if result else None
+        try:
+            query = "SELECT role FROM users WHERE username = ?"
+            result = self.db_manager.execute_query(query, (username,), fetch_one=True)
+            return result['role'] if result else None
+        except Exception as e:
+            logger.error(f"Error retrieving role for user '{username}': {e}", exc_info=True)
+            return None
 
     def get_all_users(self):
-        query = "SELECT u.id, u.username, u.role, u.EmployeeID, e.FirstName, e.LastName FROM users u LEFT JOIN Employees e ON u.EmployeeID = e.EmployeeID ORDER BY u.username"
-        results = self.db_manager.execute_query(query, fetch_all=True)
-        return [dict(row) for row in results] if results else []
+        try:
+            query = "SELECT u.id, u.username, u.role, u.EmployeeID, e.FirstName, e.LastName FROM users u LEFT JOIN Employees e ON u.EmployeeID = e.EmployeeID ORDER BY u.username"
+            results = self.db_manager.execute_query(query, fetch_all=True)
+            return [dict(row) for row in results] if results else []
+        except Exception as e:
+            logger.error(f"Error retrieving all users: {e}", exc_info=True)
+            return []
 
     def update_user_role(self, username, new_role):
         if new_role not in Config.get_role_permissions():
@@ -194,14 +206,18 @@ class UserManagement:
             return False, f"User '{username}' not found."
 
         query = "DELETE FROM users WHERE username = ?"
-        success = self.db_manager.execute_query(query, (username,), commit=True)
+        try:
+            success = self.db_manager.execute_query(query, (username,), commit=True)
 
-        if success:
-            logger.info(f"User '{username}' deleted successfully.")
-            return True, f"User '{username}' deleted successfully."
-        else:
-            logger.error(f"Failed to delete user '{username}'.")
-            return False, "Failed to delete user due to a database error."
+            if success:
+                logger.info(f"User '{username}' deleted successfully.")
+                return True, f"User '{username}' deleted successfully."
+            else:
+                logger.error(f"Failed to delete user '{username}'.")
+                return False, "Failed to delete user due to a database error."
+        except Exception as e:
+            logger.error(f"Error deleting user '{username}': {e}", exc_info=True)
+            return False, f"An unexpected error occurred: {e}"
 
 
     def check_access(self, role, module_name):
@@ -231,26 +247,34 @@ class UserManagement:
         new_password_hash = self._hash_password(new_password)
         update_query = "UPDATE users SET password_hash = ? WHERE username = ?"
 
-        success = self.db_manager.execute_query(update_query, (new_password_hash, username), commit=True)
-        if success:
-            logger.info(f"Password for user '{username}' updated successfully.")
-            return True, f"Password for '{username}' updated successfully."
-        else:
-            logger.error(f"Failed to update password for user '{username}'.")
-            return False, "Failed to update password due to a database error."
+        try:
+            success = self.db_manager.execute_query(update_query, (new_password_hash, username), commit=True)
+            if success:
+                logger.info(f"Password for user '{username}' updated successfully.")
+                return True, f"Password for '{username}' updated successfully."
+            else:
+                logger.error(f"Failed to update password for user '{username}'.")
+                return False, "Failed to update password due to a database error."
+        except Exception as e:
+            logger.error(f"Error changing password for user '{username}': {e}", exc_info=True)
+            return False, f"An unexpected error occurred: {e}"
 
     def get_user_details_by_username(self, username):
-        query = "SELECT id, EmployeeID, role, username FROM users WHERE username = ?" # Added role, username
-        result = self.db_manager.execute_query(query, (username,), fetch_one=True)
-        if result:
-            return {
-                'app_user_id': result['id'],
-                'employee_db_id': result['EmployeeID'],
-                'role': result['role'], # Good to have role here too
-                'username': result['username']
-            }
-        else:
-            logger.warning(f"User details not found for username: {username}")
+        try:
+            query = "SELECT id, EmployeeID, role, username FROM users WHERE username = ?"
+            result = self.db_manager.execute_query(query, (username,), fetch_one=True)
+            if result:
+                return {
+                    'app_user_id': result['id'],
+                    'employee_db_id': result['EmployeeID'],
+                    'role': result['role'],
+                    'username': result['username']
+                }
+            else:
+                logger.warning(f"User details not found for username: {username}")
+                return None
+        except Exception as e:
+            logger.error(f"Error retrieving user details for '{username}': {e}", exc_info=True)
             return None
 
     def get_unlinked_employees(self):
@@ -258,15 +282,19 @@ class UserManagement:
         Retrieves a list of employees (EmployeeID, FirstName, LastName)
         who are not currently linked to any app user in the 'users' table.
         """
-        query = """
-        SELECT e.EmployeeID, e.FirstName, e.LastName
-        FROM Employees e
-        LEFT JOIN users u ON e.EmployeeID = u.EmployeeID
-        WHERE u.EmployeeID IS NULL
-        ORDER BY e.LastName, e.FirstName;
-        """
-        results = self.db_manager.execute_query(query, fetch_all=True)
-        return [dict(row) for row in results] if results else []
+        try:
+            query = """
+            SELECT e.EmployeeID, e.FirstName, e.LastName
+            FROM Employees e
+            LEFT JOIN users u ON e.EmployeeID = u.EmployeeID
+            WHERE u.EmployeeID IS NULL
+            ORDER BY e.LastName, e.FirstName;
+            """
+            results = self.db_manager.execute_query(query, fetch_all=True)
+            return [dict(row) for row in results] if results else []
+        except Exception as e:
+            logger.error(f"Error retrieving unlinked employees: {e}", exc_info=True)
+            return []
 
     # get_employee_id_for_app_user can be removed or kept if used internally,
     # but get_user_details_by_username is now preferred.

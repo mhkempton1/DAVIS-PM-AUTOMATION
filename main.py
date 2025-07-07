@@ -319,6 +319,7 @@ class ProjectManagementApp(tk.Tk):
         from monitoring_control import MonitoringControl
         from reporting import Reporting
         from closeout import Closeout
+        from cost_control import CostControl
 
         integration_module = Integration(db_manager)
         data_processing_module = DataProcessing(db_manager)
@@ -333,6 +334,7 @@ class ProjectManagementApp(tk.Tk):
             reporting_instance=reporting_module,
             monitor_control_instance=monitoring_control_module
         )
+        cost_control_module = CostControl(db_manager)
 
         self.modules = {
             constants.MODULE_INTEGRATION: integration_module,
@@ -592,7 +594,7 @@ class ProjectManagementApp(tk.Tk):
         for item in self.project_tree.get_children():
             self.project_tree.delete(item)
 
-        project_startup_module = self.modules.get('project_startup')
+        project_startup_module = self.modules.get(constants.MODULE_PROJECT_STARTUP)
         if project_startup_module and hasattr(project_startup_module, 'get_all_projects_with_status'):
             projects = project_startup_module.get_all_projects_with_status()
             if projects:
