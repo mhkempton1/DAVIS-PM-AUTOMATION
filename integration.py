@@ -20,8 +20,8 @@ class Integration:
             df = pd.read_csv(file_path, encoding='utf-8-sig')
 
             if df.empty:
-                logger.warning(f"CSV file '{file_path}' is empty or has no data rows. Nothing to import.")
-                return False, "CSV file is empty or contains no data."
+                logger.warning(f"Estimate CSV file '{file_path}' is empty or has no data rows. Nothing to import.")
+                return False, "Estimate CSV file is empty or contains no data."
 
             insert_query = """
             INSERT INTO raw_estimates (ProjectID, RawData, SourceFile, Status)
@@ -36,32 +36,32 @@ class Integration:
 
             try:
                 for index, row in df.iterrows():
-                    raw_data_json = pd.Series(row).to_json(orient='index')
-                    params = (project_id, raw_data_json, base_filename, 'Pending Processing')
+                    estimate_json = pd.Series(row).to_json(orient='index') # Changed raw_data_json to estimate_json
+                    params = (project_id, estimate_json, base_filename, 'Pending Processing')
                     cursor.execute(insert_query, params)
                     imported_rows_count += 1
 
                 conn.commit()
-                logger.info(f"Successfully imported {imported_rows_count} rows from '{file_path}' into raw_estimates.")
-                return True, f"Successfully imported {imported_rows_count} rows from '{base_filename}'."
+                logger.info(f"Successfully imported {imported_rows_count} estimate line items from '{file_path}' into raw_estimates.") # Clarified log
+                return True, f"Successfully imported {imported_rows_count} estimate line items from '{base_filename}'." # Clarified message
 
             except Exception as e_inner:
                 conn.rollback()
-                logger.error(f"Error during batch insert from CSV '{file_path}': {e_inner}", exc_info=True)
-                return False, f"Error during database insert: {e_inner}"
+                logger.error(f"Error during batch insert of estimates from CSV '{file_path}': {e_inner}", exc_info=True) # Clarified log
+                return False, f"Error during database insert of estimates: {e_inner}" # Clarified message
 
         except FileNotFoundError:
-            logger.error(f"Error: The file '{file_path}' was not found (re-check).")
-            return False, "File not found."
+            logger.error(f"Error: The estimate CSV file '{file_path}' was not found.") # Clarified log
+            return False, "Estimate CSV file not found."
         except pd.errors.EmptyDataError:
-            logger.error(f"Error: The file '{file_path}' is empty (pandas error).")
-            return False, "Empty data file."
+            logger.error(f"Error: The estimate CSV file '{file_path}' is empty (pandas error).") # Clarified log
+            return False, "Empty estimate CSV file."
         except pd.errors.ParserError as pe:
-            logger.error(f"Error: Could not parse '{file_path}'. Check CSV format. Details: {pe}")
-            return False, "CSV parsing error. Ensure valid CSV format."
+            logger.error(f"Error: Could not parse estimate CSV '{file_path}'. Check CSV format. Details: {pe}") # Clarified log
+            return False, "Estimate CSV parsing error. Ensure valid CSV format."
         except Exception as e:
-            logger.exception(f"An unexpected error occurred during CSV import of '{file_path}': {e}")
-            return False, f"An unexpected error occurred: {e}"
+            logger.exception(f"An unexpected error occurred during estimate CSV import of '{file_path}': {e}") # Clarified log
+            return False, f"An unexpected error occurred during estimate import: {e}" # Clarified message
 
     def import_labor_budget_from_csv(self, file_path, project_id=None):
         """
@@ -209,16 +209,19 @@ class Integration:
             logger.exception(f"Error exporting data to CSV '{output_path}': {e}")
             return False, f"Failed to export report: {e}"
 
-    def get_raw_estimates(self):
+    def get_raw_estimates(self): # Method name kept for consistency with table
+        """Retrieves all imported (raw) estimates from the database."""
         query = "SELECT RawEstimateID, ProjectID, RawData, SourceFile, Status FROM raw_estimates"
         rows = self.db_manager.execute_query(query, fetch_all=True)
 
         if rows is None:
-            logger.error("Failed to retrieve raw estimates from database.")
+            logger.error("Failed to retrieve imported estimates from database.") # Clarified log
             return pd.DataFrame()
         if not rows:
+            logger.info("No imported estimates found in the database.") # Added info log
             return pd.DataFrame()
 
+        logger.info(f"Retrieved {len(rows)} imported estimates.") # Added info log
         return pd.DataFrame([dict(row) for row in rows])
 
     # --- QuickBooks Integration Placeholders ---
@@ -244,6 +247,7 @@ class Integration:
         return False, "Linking SOV to internal project is not implemented."
 
     def get_processed_estimates(self):
+        """Retrieves all processed estimates from the database."""
         query = "SELECT ProcessedEstimateID, ProjectID, RawEstimateID, CostCode, Description, Quantity, Unit, UnitCost, TotalCost, Phase, ProcessedDate FROM processed_estimates"
         rows = self.db_manager.execute_query(query, fetch_all=True)
 
@@ -251,6 +255,8 @@ class Integration:
             logger.error("Failed to retrieve processed estimates from database.")
             return pd.DataFrame()
         if not rows:
+            logger.info("No processed estimates found in the database.") # Added info log
             return pd.DataFrame()
 
+        logger.info(f"Retrieved {len(rows)} processed estimates.") # Added info log
         return pd.DataFrame([dict(row) for row in rows])

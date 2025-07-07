@@ -114,6 +114,7 @@ MODULE_REPORTING = "reporting"
 MODULE_CLOSEOUT = "closeout"
 MODULE_USER_MANAGEMENT = "user_management"
 MODULE_CONFIGURATION = "configuration" # Though this is often just the Config class
+MODULE_CRM = "crm" # Added CRM module key
 
 # GUI Frame / Activity Bar Identifiers (might overlap with module names or be specific UI identifiers)
 FRAME_IDP = "integration_data_processing" # Integration & Data Processing
@@ -126,3 +127,4 @@ FRAME_DAILY_LOG = "daily_log"
 FRAME_PURCH_LOGISTICS = "purchasing_logistics"
 FRAME_PROD_PREFAB = "production_prefab"
 FRAME_USER_MGMT = "user_management" # Matches module name
+FRAME_CRM = "crm_frame" # Added CRM frame identifier

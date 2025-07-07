@@ -34,6 +34,7 @@ from gui_frames.daily_log_frame import DailyLogModuleFrame
 from gui_frames.user_management_frame import UserManagementModuleFrame
 from gui_frames.purchasing_logistics_frame import PurchasingLogisticsModuleFrame
 from gui_frames.production_prefab_frame import ProductionPrefabModuleFrame
+from gui_frames.crm_frame import CRMModuleFrame # Added CRM Frame import
 
 
 # Set up logging for the Main Application
@@ -319,6 +320,7 @@ class ProjectManagementApp(tk.Tk):
         from monitoring_control import MonitoringControl
         from reporting import Reporting
         from closeout import Closeout
+        from crm import CRM # Added CRM backend module import
 
         integration_module = Integration(db_manager)
         data_processing_module = DataProcessing(db_manager)
@@ -333,6 +335,7 @@ class ProjectManagementApp(tk.Tk):
             reporting_instance=reporting_module,
             monitor_control_instance=monitoring_control_module
         )
+        crm_module = CRM(db_manager) # Instantiated CRM module
 
         self.modules = {
             constants.MODULE_INTEGRATION: integration_module,
@@ -343,7 +346,8 @@ class ProjectManagementApp(tk.Tk):
             constants.MODULE_REPORTING: reporting_module,
             constants.MODULE_CLOSEOUT: closeout_module,
             constants.MODULE_USER_MANAGEMENT: self.user_manager,
-            constants.MODULE_CONFIGURATION: Config
+            constants.MODULE_CONFIGURATION: Config,
+            constants.MODULE_CRM: crm_module # Added CRM to modules dictionary
         }
 
         for name, instance in self.modules.items():
@@ -467,6 +471,7 @@ class ProjectManagementApp(tk.Tk):
             ('Purchasing & Logistics', constants.FRAME_PURCH_LOGISTICS, PurchasingLogisticsModuleFrame),
             ('Production & Prefab', constants.FRAME_PROD_PREFAB, ProductionPrefabModuleFrame),
             ('User Management', constants.FRAME_USER_MGMT, UserManagementModuleFrame),
+            ('CRM', constants.FRAME_CRM, CRMModuleFrame), # Added CRM to navigation
         ]
 
         for text, module_name, frame_class in module_buttons_data:
@@ -501,6 +506,8 @@ class ProjectManagementApp(tk.Tk):
                     actual_backend_module_key = constants.MODULE_REPORTING # Primary module for this combined frame
                 elif module_name == constants.FRAME_USER_MGMT:
                     actual_backend_module_key = constants.MODULE_USER_MANAGEMENT
+                elif module_name == constants.FRAME_CRM: # Added case for CRM
+                    actual_backend_module_key = constants.MODULE_CRM
                 # For FRAME_SCHEDULING, FRAME_DAILY_LOG, actual_backend_module_key remains None
                 # if they don't have a direct primary backend module in self.modules.
                 # Their frames must handle module_instance_to_pass being None.

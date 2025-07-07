@@ -44,19 +44,19 @@ class IntegrationDataProcessingModuleFrame(BaseModuleFrame):
         create_project_button.grid(row=3, column=0, columnspan=2, pady=10)
 
         # --- Integration Section (from IntegrationModuleFrame) ---
-        import_frame = ttk.LabelFrame(self, text="Import Estimate Data (CSV)")
+        import_frame = ttk.LabelFrame(self, text="Import Estimates (CSV)")
         import_frame.pack(pady=10, padx=20, fill="x")
 
         self.csv_path_label_var = tk.StringVar(value="No file selected")
         tk.Label(import_frame, textvariable=self.csv_path_label_var).pack(side="left", padx=5, pady=5)
         ttk.Button(import_frame, text="Browse CSV", command=self.browse_csv_consolidated).pack(side="left", padx=5, pady=5)
-        ttk.Button(import_frame, text="Import", command=self.import_csv_action_consolidated).pack(side="right", padx=5, pady=5)
+        ttk.Button(import_frame, text="Import Estimates", command=self.import_csv_action_consolidated).pack(side="right", padx=5, pady=5)
         self.selected_csv_path = None
 
         # --- Data Processing Section (from DataProcessingModuleFrame) ---
         data_proc_part_frame = ttk.LabelFrame(self, text="Data Processing Actions")
         data_proc_part_frame.pack(pady=10, padx=20, fill="x")
-        ttk.Button(data_proc_part_frame, text="Process Raw Estimate Data", command=self.process_data_action_consolidated).pack(pady=10)
+        ttk.Button(data_proc_part_frame, text="Process Imported Estimates", command=self.process_data_action_consolidated).pack(pady=10)
 
         # --- Placeholder for Quote/PO ---
         quote_po_frame = ttk.LabelFrame(self, text="Quote/PO Information")
