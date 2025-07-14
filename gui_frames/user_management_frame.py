@@ -89,8 +89,8 @@ class UserManagementModuleFrame(BaseModuleFrame):
         self.unlinked_employees_map = {} # Reset map
         employee_display_list = ["(None - Unlinked)"] # Option to explicitly unlink or not link
 
-        if self.module and hasattr(self.module, 'get_unlinked_employees'):
-            unlinked_employees = self.module.get_unlinked_employees()
+        if self.module_instance and hasattr(self.module_instance, 'get_unlinked_employees'):
+            unlinked_employees = self.module_instance.get_unlinked_employees()
             if unlinked_employees:
                 for emp in unlinked_employees:
                     display_name = f"{emp['FirstName']} {emp['LastName']} (ID: {emp['EmployeeID']})"
@@ -112,11 +112,11 @@ class UserManagementModuleFrame(BaseModuleFrame):
             self.show_message("Input Error", "Please enter a username to load details.", True)
             return
 
-        if not self.module or not hasattr(self.module, 'get_user_details_by_username'):
+        if not self.module_instance or not hasattr(self.module_instance, 'get_user_details_by_username'):
             self.show_message("Error", "User Management module not available.", True)
             return
 
-        user_details = self.module.get_user_details_by_username(username)
+        user_details = self.module_instance.get_user_details_by_username(username)
         if not user_details:
             self.show_message("Not Found", f"User '{username}' not found.", True)
             self.update_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0] if Config.ROLE_PERMISSIONS.keys() else "")
@@ -131,8 +131,8 @@ class UserManagementModuleFrame(BaseModuleFrame):
         employee_display_list_manage = ["(None - Unlinked)"]
         temp_map_manage = {"(None - Unlinked)": None}
 
-        if self.module and hasattr(self.module, 'get_unlinked_employees'):
-            unlinked_employees = self.module.get_unlinked_employees()
+        if self.module_instance and hasattr(self.module_instance, 'get_unlinked_employees'):
+            unlinked_employees = self.module_instance.get_unlinked_employees()
             if unlinked_employees:
                 for emp in unlinked_employees:
                     display_name = f"{emp['FirstName']} {emp['LastName']} (ID: {emp['EmployeeID']})"
@@ -154,7 +154,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
                  # Need to fetch this employee's name to make it user-friendly
                  # This ideally comes from a backend method like `get_employee_by_id`
                  # Placeholder:
-                 # emp_details = self.module.get_employee_details(current_linked_employee_id)
+                 # emp_details = self.module_instance.get_employee_details(current_linked_employee_id)
                  # if emp_details: linked_emp_display = f"{emp_details['FirstName']} {emp_details['LastName']} (ID: {current_linked_employee_id})"
                 if current_linked_employee_id not in temp_map_manage.values(): # Add if not already (e.g. if they were unlinked by another admin)
                     employee_display_list_manage.append(linked_emp_display) # Add display for current
@@ -169,7 +169,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
 
     def create_user_action(self):
-        if not self.module: self.show_message("Error", "User Management module not available.", True); return
+        if not self.module_instance: self.show_message("Error", "User Management module not available.", True); return
 
         username = self.create_username_entry.get().strip()
         password = self.create_password_entry.get().strip()
@@ -185,7 +185,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
         try:
             # Assuming create_user now might return (True, message) on success,
             # or raise AppError on failure.
-            success, msg = self.module.create_user(username, password, role, employee_id=employee_id_to_link)
+            success, msg = self.module_instance.create_user(username, password, role, employee_id=employee_id_to_link)
             self.show_message("Create User", msg, is_error=not success) # is_error based on success flag
             if success:
                 self.create_username_entry.delete(0, tk.END)
@@ -202,70 +202,46 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
     def update_user_details_action(self):
         """Handles updating role and employee link."""
-            self.create_password_entry.delete(0, tk.END)
-            if Config.ROLE_PERMISSIONS.keys(): self.create_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
-            self.load_unlinked_employees_for_combos() # Refresh employee list
-
-    def update_user_details_action(self):
-        """Handles updating role and employee link."""
-        if not self.module: self.show_message("Error", "User Management module not available.", True); return
+        if not self.module_instance:
+            self.show_message("Error", "User Management module not available.", True)
+            return
 
         username = self.manage_username_entry.get().strip()
-        new_role = self.update_role_combo.get().strip()
-        selected_employee_display = self.manage_employee_link_combo.get()
-
-        # Use the main unlinked_employees_map if the selection is from there,
-        # otherwise, it might be the "Currently Linked: ..." string, which needs parsing or specific handling.
-        # For simplicity, the map should be updated by load_user_details_for_management to include the current link.
-        employee_id_to_link = self.unlinked_employees_map.get(selected_employee_display)
-
-
         if not username:
             self.show_message("Input Error", "Username is required to update details.", True)
             return
 
-        # Update Role
-        role_updated_success, role_msg = True, "" # Assume success if no change or role is not being updated in this combined action
-        current_user_details = self.module.get_user_details_by_username(username)
-        if not current_user_details:
-            self.show_message("Error", f"User {username} not found.", True)
-            return
-
-        if new_role and new_role != current_user_details.get('role'):
-            role_updated_success, role_msg = self.module.update_user_role(username, new_role)
-            self.show_message("Update Role", role_msg, is_error=not role_updated_success)
-
-        # Update Employee Link
-        link_updated_success, link_msg = True, ""
-        # Check if the link actually changed
-        if employee_id_to_link != current_user_details.get('employee_db_id'):
-            link_updated_success, link_msg = self.module.update_user_employee_link(username, employee_id_to_link)
-            self.show_message("Update Employee Link", link_msg, is_error=not link_updated_success)
+        new_role = self.update_role_combo.get().strip()
+        selected_employee_display = self.manage_employee_link_combo.get()
+        employee_id_to_link = self.unlinked_employees_map.get(selected_employee_display)
 
         try:
-            role_updated_success, role_msg = True, "Role not changed or no update attempted."
+            current_user_details = self.module_instance.get_user_details_by_username(username)
+            if not current_user_details:
+                self.show_message("Error", f"User '{username}' not found.", True)
+                return
+
+            role_updated_success, role_msg = True, "Role not changed."
             if new_role and new_role != current_user_details.get('role'):
-                role_updated_success, role_msg = self.module.update_user_role(username, new_role)
+                role_updated_success, role_msg = self.module_instance.update_user_role(username, new_role)
 
-            link_updated_success, link_msg = True, "Link not changed or no update attempted."
-            if employee_id_to_link != current_user_details.get('employee_db_id'): # Also handles None correctly
-                link_updated_success, link_msg = self.module.update_user_employee_link(username, employee_id_to_link)
-
-            # Combine messages or show separately
-            final_message = []
-            if not role_updated_success: final_message.append(f"Role: {role_msg}")
-            if not link_updated_success: final_message.append(f"Link: {link_msg}")
+            link_updated_success, link_msg = True, "Link not changed."
+            if employee_id_to_link != current_user_details.get('employee_db_id'):
+                link_updated_success, link_msg = self.module_instance.update_user_employee_link(username, employee_id_to_link)
 
             if role_updated_success and link_updated_success:
+                self.show_message("Update User", f"Successfully updated user '{username}'.")
                 self.manage_username_entry.delete(0, tk.END)
-                if Config.ROLE_PERMISSIONS.keys(): self.update_role_combo.set(list(Config.ROLE_PERMISSIONS.keys())[0])
+                self.update_role_combo.set('')
+                self.manage_employee_link_combo.set('')
                 self.load_unlinked_employees_for_combos()
-                self.manage_employee_link_combo.set("(None - Unlinked)")
-                self.show_message("Update User", f"User '{username}' details processed. Role: {role_msg}. Link: {link_msg}", parent=self)
             else:
-                # If one part succeeded but other failed, it's tricky. Backend should be transactional for this ideally.
-                # For now, show combined error messages.
-                self.show_message("Update User Error", f"Issues updating '{username}': {'; '.join(final_message)}", is_error=True, parent=self)
+                error_messages = []
+                if not role_updated_success:
+                    error_messages.append(f"Role update failed: {role_msg}")
+                if not link_updated_success:
+                    error_messages.append(f"Link update failed: {link_msg}")
+                self.show_message("Update User Error", "\n".join(error_messages), is_error=True)
 
         except AppError as ae:
             logger.error(f"Error updating user '{username}': {ae}", exc_info=True)
@@ -276,7 +252,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
 
     def delete_user_action(self):
-        if not self.module: self.show_message("Error", "User Management module not available.", True); return
+        if not self.module_instance: self.show_message("Error", "User Management module not available.", True); return
         username = self.manage_username_entry.get().strip()
         if not username:
             self.show_message("Input Error", "Username is required for deletion.", True)
@@ -287,7 +263,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
         if messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete user '{username}'?", parent=self):
             try:
-                success, msg = self.module.delete_user(username) # Assumes delete_user might still return tuple
+                success, msg = self.module_instance.delete_user(username) # Assumes delete_user might still return tuple
                 self.show_message("Delete User", msg, is_error=not success)
                 if success:
                     self.manage_username_entry.delete(0, tk.END)
@@ -307,7 +283,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
         username = simpledialog.askstring("Change Password", "Enter username for password change:", parent=self)
         if not username: return
 
-        if not self.module or not hasattr(self.module, 'change_user_password'):
+        if not self.module_instance or not hasattr(self.module_instance, 'change_user_password'):
             self.show_message("Error", "User Management module not available for password change.", True)
             return
 
@@ -322,7 +298,7 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
         try:
             # Assuming change_user_password might still return (True, msg) or raise AppError
-            success, msg = self.module.change_user_password(username, new_password)
+            success, msg = self.module_instance.change_user_password(username, new_password)
             self.show_message("Change Password", msg, is_error=not success)
         except AppError as ae:
             logger.error(f"Error changing password for '{username}': {ae}", exc_info=True)
@@ -333,10 +309,10 @@ class UserManagementModuleFrame(BaseModuleFrame):
 
 
     def list_users_action(self):
-        # ... (implementation remains similar, ensure self.module check) ...
-        if not self.module or not hasattr(self.module, 'get_all_users'):
+        # ... (implementation remains similar, ensure self.module_instance check) ...
+        if not self.module_instance or not hasattr(self.module_instance, 'get_all_users'):
             self.show_message("Error","User Management module not available.", True); return
-        users_data = self.module.get_all_users()
+        users_data = self.module_instance.get_all_users()
         if users_data:
             df_users = pd.DataFrame(users_data)
             # Select and rename columns for better display

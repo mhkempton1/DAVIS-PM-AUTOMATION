@@ -574,7 +574,7 @@ class ProjectStartupModuleFrame(BaseModuleFrame):
         finally:
             logger.info(f"'Execute Data DNA' process finished or terminated for project: {project_name} (ID: {project_id}).")
             if hasattr(self.app, 'load_project_list_data'):
-            self.app.load_project_list_data() # Refresh project list in sidebar
+                self.app.load_project_list_data() # Refresh project list in sidebar
 
 
     def _get_valid_project_id_from_entry(self, entry_widget=None):

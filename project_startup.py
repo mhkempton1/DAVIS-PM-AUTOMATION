@@ -1047,10 +1047,6 @@ class ProjectStartup:
         )
 
         try:
-            unit_of_measure, urgency_level, required_by_date, notes
-        )
-
-        try:
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -1094,10 +1090,6 @@ class ProjectStartup:
         params = (
             assembly_id, project_id, quantity_to_produce, assigned_to_employee_id,
             start_date, completion_date, notes, constants.PRODUCTION_STATUS_PLANNED
-        )
-
-        try:
-            start_date, completion_date, notes
         )
 
         try:

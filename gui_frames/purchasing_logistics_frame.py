@@ -94,7 +94,7 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
             try:
                 project_id = int(project_id_str)
             except ValueError:
-                self.show_message("Input Error", "Project ID must be a valid number if provided.", True, parent=self)
+                self.show_message("Input Error", "Project ID must be a valid number if provided.", True)
                 return
         elif self.app.active_project_id is not None:
             project_id = self.app.active_project_id
@@ -108,12 +108,12 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
         notes = self.req_notes_entry.get().strip()
 
         if not material_description or not quantity_str:
-            self.show_message("Input Error", "Material Description and Quantity are required.", True, parent=self)
+            self.show_message("Input Error", "Material Description and Quantity are required.", True)
             return
         try:
             quantity_requested = float(quantity_str)
         except ValueError:
-            self.show_message("Input Error", "Quantity must be a valid number.", True, parent=self)
+            self.show_message("Input Error", "Quantity must be a valid number.", True)
             return
 
         user_details = self.app.user_manager.get_user_details_by_username(self.app.current_username)
@@ -121,7 +121,7 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
 
         if employee_db_id is None:
             # Option 1: Show error and prevent submission
-            self.show_message("User Error", "Your app user is not linked to an Employee record. Cannot submit material request.", True, parent=self)
+            self.show_message("User Error", "Your app user is not linked to an Employee record. Cannot submit material request.", True)
             logger.warning(f"Material request submission blocked for app user {self.app.current_username} due to missing EmployeeID link.")
             return
             # Option 2: Use a placeholder (less ideal for required FKs if backend doesn't handle it)
@@ -139,7 +139,7 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
                 required_by_date=required_by_date,
                 notes=notes
             )
-            self.show_message("Material Request", msg, is_error=not success, parent=self)
+            self.show_message("Material Request", msg, is_error=not success)
             if success:
                 self.load_pending_requests()
                 self.req_project_id_entry.delete(0, tk.END)
@@ -150,7 +150,7 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
                 self.req_date_entry.delete(0, tk.END)
                 self.req_notes_entry.delete(0, tk.END)
         else:
-            self.show_message("Error", "Purchasing backend module not available.", True, parent=self)
+            self.show_message("Error", "Purchasing backend module not available.", True)
             logger.error("Module instance or add_material_request method not found.")
 
     def load_pending_requests(self):
@@ -177,9 +177,9 @@ class PurchasingLogisticsModuleFrame(BaseModuleFrame):
                     logger.info("No pending material requests found by backend.")
             except Exception as e:
                 logger.error(f"Error loading pending material requests from backend: {e}", exc_info=True)
-                self.show_message("Load Error", f"Failed to load pending requests: {e}", True, parent=self)
+                self.show_message("Load Error", f"Failed to load pending requests: {e}", True)
         else:
-            self.show_message("Error", "Backend for loading material requests not available.", True, parent=self)
+            self.show_message("Error", "Backend for loading material requests not available.", True)
             logger.error("Module instance or get_pending_material_requests not found.")
 
     def on_active_project_changed(self):
