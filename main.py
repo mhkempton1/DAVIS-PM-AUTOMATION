@@ -34,6 +34,8 @@ from gui_frames.daily_log_frame import DailyLogModuleFrame
 from gui_frames.user_management_frame import UserManagementModuleFrame
 from gui_frames.purchasing_logistics_frame import PurchasingLogisticsModuleFrame
 from gui_frames.production_prefab_frame import ProductionPrefabModuleFrame
+from gui_frames.crm_frame import CrmModuleFrame
+from gui_frames.estimate_frame import EstimateModuleFrame
 
 
 # Set up logging for the Main Application
@@ -320,6 +322,8 @@ class ProjectManagementApp(tk.Tk):
         from reporting import Reporting
         from closeout import Closeout
         from cost_control import CostControl
+        from crm import Crm
+        from estimate import Estimate
 
         integration_module = Integration(db_manager)
         data_processing_module = DataProcessing(db_manager)
@@ -335,6 +339,8 @@ class ProjectManagementApp(tk.Tk):
             monitor_control_instance=monitoring_control_module
         )
         cost_control_module = CostControl(db_manager)
+        crm_module = Crm(db_manager)
+        estimate_module = Estimate(db_manager)
 
         self.modules = {
             constants.MODULE_INTEGRATION: integration_module,
@@ -345,7 +351,9 @@ class ProjectManagementApp(tk.Tk):
             constants.MODULE_REPORTING: reporting_module,
             constants.MODULE_CLOSEOUT: closeout_module,
             constants.MODULE_USER_MANAGEMENT: self.user_manager,
-            constants.MODULE_CONFIGURATION: Config
+            constants.MODULE_CONFIGURATION: Config,
+            constants.MODULE_CRM: crm_module,
+            constants.MODULE_ESTIMATE: estimate_module,
         }
 
         for name, instance in self.modules.items():
@@ -459,6 +467,8 @@ class ProjectManagementApp(tk.Tk):
             widget.destroy()
 
         module_buttons_data = [
+            ('CRM', constants.FRAME_CRM, CrmModuleFrame),
+            ('Estimate', constants.FRAME_ESTIMATE, EstimateModuleFrame),
             ('Integration & Data Proc.', constants.FRAME_IDP, IntegrationDataProcessingModuleFrame),
             ('Project Startup', constants.FRAME_PROJECT_STARTUP, ProjectStartupModuleFrame),
             ('Execution Management', constants.FRAME_EXEC_MGMT, ExecutionManagementModuleFrame),
@@ -503,6 +513,10 @@ class ProjectManagementApp(tk.Tk):
                     actual_backend_module_key = constants.MODULE_REPORTING # Primary module for this combined frame
                 elif module_name == constants.FRAME_USER_MGMT:
                     actual_backend_module_key = constants.MODULE_USER_MANAGEMENT
+                elif module_name == constants.FRAME_CRM:
+                    actual_backend_module_key = constants.MODULE_CRM
+                elif module_name == constants.FRAME_ESTIMATE:
+                    actual_backend_module_key = constants.MODULE_ESTIMATE
                 # For FRAME_SCHEDULING, FRAME_DAILY_LOG, actual_backend_module_key remains None
                 # if they don't have a direct primary backend module in self.modules.
                 # Their frames must handle module_instance_to_pass being None.
